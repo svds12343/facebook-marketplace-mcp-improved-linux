@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
 import type { SearchSortBy, DeliveryMethod } from "../facebook/types.js";
+import type { ListingFilters } from "../facebook/types.js";
+import { filterSchema, filterListings } from "../analysis/filters.js";
+import { updateState } from "../storage/state.js";
+import { observeListing, priceSignals } from "../analysis/prices.js";
 
 export const searchOptionsSchema = {
   sort_by: z.enum(["suggested", "distance", "date_listed", "price_low_to_high", "price_high_to_low"]).optional()
@@ -39,10 +43,11 @@ export const searchListingsSchema = {
     .describe("Requested page size, 1-100 (default: 20); Facebook may return a different count"),
   cursor: z.string().min(1).max(10000).optional().describe("endCursor from the previous page; retain the same query and filters"),
   ...searchOptionsSchema,
+  ...filterSchema,
 };
 
 export function createSearchHandler(client: FacebookClient) {
-  return async (args: {
+  return async (args: ListingFilters & {
     query: string;
     latitude: number;
     longitude: number;
@@ -75,12 +80,21 @@ export function createSearchHandler(client: FacebookClient) {
 
       const paginationStatus = !result.hasNextPage ? "end"
         : !result.endCursor || result.endCursor === args.cursor ? "stalled" : "more_results";
-      const structuredContent = { ...result, paginationStatus, effectiveRadiusKm: Math.ceil(args.radius_km) };
+      const filtered = await updateState(state => {
+        const filtered = filterListings(result.listings, args, state);
+        const shown = new Set(filtered.listings.map(l => l.id));
+        const now = new Date().toISOString();
+        for (const listing of result.listings) observeListing(state, listing, now, undefined, shown.has(listing.id));
+        return filtered;
+      });
+      const structuredContent = { ...result, ...filtered, paginationStatus, effectiveRadiusKm: Math.ceil(args.radius_km),
+        priceReview: filtered.listings.flatMap(listing => priceSignals(listing).map(signal => ({ listingId: listing.id, ...signal }))),
+        coverage: "One Facebook page. Keyword filtering checks titles and cached descriptions only. More pages may contain matches even when this page is empty." };
       const continuation = paginationStatus === "more_results"
         ? `\n\nMore results available. Next cursor: ${result.endCursor}`
         : paginationStatus === "stalled" ? "\n\nPagination stalled: stop here; Facebook did not supply a new cursor." : "";
 
-      if (result.listings.length === 0) {
+      if (filtered.listings.length === 0) {
         return {
           content: [
             {
@@ -92,14 +106,14 @@ export function createSearchHandler(client: FacebookClient) {
         };
       }
 
-      const summary = result.listings
+      const summary = filtered.listings
         .map(
           (l, i) =>
             `${i + 1}. **${l.title}** — ${l.price}\n   📍 ${l.location} | 👤 ${l.sellerName}${l.isPending ? " ⏳ PENDING" : ""}\n   🔗 ${l.url}`
         )
         .join("\n\n");
 
-      const text = `Found ${result.listings.length} listings for "${args.query}":\n\n${summary}${continuation}`;
+      const text = `Found ${filtered.listings.length} listings on this page for "${args.query}":\n\n${summary}${continuation}`;
 
       return {
         content: [{ type: "text" as const, text }],

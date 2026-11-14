@@ -1,203 +1,53 @@
 import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
-import type { SearchSortBy, DeliveryMethod } from "../facebook/types.js";
 import { searchOptionsSchema, searchListingsSchema } from "./search.js";
-import {
-  addMonitor,
-  loadMonitors,
-  getMonitor,
-  updateMonitorSeenIds,
-  deleteMonitor,
-} from "../storage/monitors.js";
+import { filterSchema } from "../analysis/filters.js";
+import { addMonitor, loadMonitors, deleteMonitor } from "../storage/monitors.js";
+import { runChecks } from "../monitoring/runner.js";
+import { result, guarded } from "./common.js";
 
+export const currencySchema = z.string().regex(/^[A-Z]{3}$/).describe("Explicit ISO currency code, e.g. CHF; currencies are never converted automatically.");
 export const monitorSearchSchema = {
-  name: z.string().describe("Name for this saved search monitor"),
-  query: searchListingsSchema.query,
-  latitude: searchListingsSchema.latitude,
-  longitude: searchListingsSchema.longitude,
-  radius_km: searchListingsSchema.radius_km,
-  min_price: searchListingsSchema.min_price,
-  max_price: searchListingsSchema.max_price,
-  category: z.string().optional().describe("Category ID"),
-  ...searchOptionsSchema,
+  name: z.string().trim().min(1).max(100).describe("Unique name for this saved search."),
+  query: searchListingsSchema.query, latitude: searchListingsSchema.latitude, longitude: searchListingsSchema.longitude,
+  radius_km: searchListingsSchema.radius_km, min_price: searchListingsSchema.min_price, max_price: searchListingsSchema.max_price,
+  category: searchListingsSchema.category, ...searchOptionsSchema, ...filterSchema,
+  max_pages: z.number().int().min(1).max(10).default(3).describe("Maximum Facebook pages per check, subject to the shared run budget. Default 3; not an exhaustive scan."),
+  inspect_limit: z.number().int().min(0).max(10).default(0).describe("Maximum listings per check for description/photo inspection, subject to request budget. Each inspects up to 3 photos. Default 0: no automatic photo downloads. Opt in explicitly to enable."),
+  target_price: z.number().positive().optional().describe("Notify when an observed offer reaches this price or lower; requires target_currency. Use watch_listing for reliable rechecks of one ID outside search pages."),
+  target_currency: currencySchema.optional(),
 };
-
 export const checkMonitorsSchema = {
-  monitor_name: z
-    .string()
-    .optional()
-    .describe("Check a specific monitor by name, or omit to check all"),
+  monitor_name: z.string().optional().describe("Check this saved search only; omit for saved searches plus individually watched listings."),
+  request_budget: z.number().int().min(1).max(30).default(3).describe("Maximum search/detail calls for this manual run. Default 3; larger values can take several minutes at the shared 3 requests/minute limit."),
 };
-
-export const deleteMonitorSchema = {
-  name: z.string().describe("Name of the monitor to delete"),
-};
-
+export const deleteMonitorSchema = { name: z.string().describe("Saved search name to remove. Existing alerts and price history remain.") };
 export const listMonitorsSchema = {};
 
 export function createMonitorSearchHandler() {
-  return async (args: {
-    name: string;
-    query: string;
-    latitude: number;
-    longitude: number;
-    radius_km: number;
-    min_price?: number;
-    max_price?: number;
-    category?: string;
-    sort_by?: SearchSortBy;
-    delivery_method?: DeliveryMethod;
-  }) => {
-    try {
-      if (args.min_price !== undefined && args.max_price !== undefined && args.min_price > args.max_price) {
-        throw new Error("min_price must not exceed max_price.");
-      }
-      const monitor = addMonitor(args.name, {
-        query: args.query,
-        latitude: args.latitude,
-        longitude: args.longitude,
-        radiusKm: args.radius_km,
-        minPrice: args.min_price,
-        maxPrice: args.max_price,
-        category: args.category,
-        sortBy: args.sort_by,
-        deliveryMethod: args.delivery_method,
-        limit: 24,
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Monitor "${monitor.name}" saved.\nID: ${monitor.id}\nQuery: "${args.query}" within ${args.radius_km}km\nUse check_monitors to check for new listings.`,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  };
+  return guarded(async (input: z.input<z.ZodObject<typeof monitorSearchSchema>>) => {
+    const args = z.object(monitorSearchSchema).parse(input);
+    if (args.min_price !== undefined && args.max_price !== undefined && args.min_price > args.max_price) throw new Error("min_price must not exceed max_price.");
+    if ((args.target_price === undefined) !== (args.target_currency === undefined)) throw new Error("Supply target_price and target_currency together.");
+    const monitor = await addMonitor(args.name, {
+      query: args.query, latitude: args.latitude, longitude: args.longitude, radiusKm: args.radius_km,
+      minPrice: args.min_price, maxPrice: args.max_price, category: args.category,
+      sortBy: args.sort_by ?? "date_listed", deliveryMethod: args.delivery_method, limit: 24,
+    }, { maxPages: args.max_pages, inspectLimit: args.inspect_limit, targetPrice: args.target_price, targetCurrency: args.target_currency,
+      filters: { exclude_keywords: args.exclude_keywords, exclude_ids: args.exclude_ids, hide_seen: args.hide_seen,
+        max_age_days: args.max_age_days, include_unknown_age: args.include_unknown_age } });
+    return result({ monitor, scheduling: "Saved locally. Automatic checks require the Ubuntu timer installed with npm run monitors:install. Alerts appear in read_alerts, not as phone/ChatGPT push notifications." });
+  });
 }
-
 export function createCheckMonitorsHandler(client: FacebookClient) {
-  return async (args: { monitor_name?: string }) => {
-    try {
-      const monitors = args.monitor_name
-        ? [getMonitor(args.monitor_name)].filter(Boolean)
-        : loadMonitors();
-
-      if (monitors.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: args.monitor_name
-                ? `Monitor "${args.monitor_name}" not found.`
-                : "No monitors saved. Use monitor_search to create one.",
-            },
-          ],
-        };
-      }
-
-      const results: string[] = [];
-
-      for (const monitor of monitors) {
-        if (!monitor) continue;
-
-        const searchResult = await client.searchListings(monitor.params);
-        const newListings = searchResult.listings.filter(
-          (l) => !monitor.seenIds.includes(l.id)
-        );
-
-        if (newListings.length > 0) {
-          updateMonitorSeenIds(
-            monitor.name,
-            newListings.map((l) => l.id)
-          );
-
-          const listingSummary = newListings
-            .map(
-              (l, i) =>
-                `  ${i + 1}. **${l.title}** — ${l.price}\n     📍 ${l.location}\n     🔗 ${l.url}`
-            )
-            .join("\n\n");
-
-          results.push(
-            `### 🔔 ${monitor.name} — ${newListings.length} new listing(s)\n\n${listingSummary}`
-          );
-        } else {
-          updateMonitorSeenIds(monitor.name, []);
-          results.push(`### ${monitor.name} — no new listings`);
-        }
-        if (searchResult.hasNextPage) {
-          results.push(`Only the first page of "${monitor.name}" was checked; more results may exist.`);
-        }
-      }
-
-      return {
-        content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Error checking monitors: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  };
+  return guarded(async (input: z.input<z.ZodObject<typeof checkMonitorsSchema>>) => {
+    const args = z.object(checkMonitorsSchema).parse(input);
+    return result(await runChecks(client, { monitorName: args.monitor_name, includeWatches: !args.monitor_name, requestBudget: args.request_budget }));
+  });
 }
-
 export function createDeleteMonitorHandler() {
-  return async (args: { name: string }) => {
-    const deleted = deleteMonitor(args.name);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: deleted
-            ? `Monitor "${args.name}" deleted.`
-            : `Monitor "${args.name}" not found.`,
-        },
-      ],
-    };
-  };
+  return guarded(async (args: { name: string }) => result({ deleted: await deleteMonitor(args.name), name: args.name }));
 }
-
 export function createListMonitorsHandler() {
-  return async () => {
-    const monitors = loadMonitors();
-    if (monitors.length === 0) {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "No monitors saved. Use monitor_search to create one.",
-          },
-        ],
-      };
-    }
-
-    const list = monitors
-      .map(
-        (m) =>
-          `- **${m.name}** — "${m.params.query}" (${m.params.radiusKm}km)\n  Created: ${m.createdAt}${m.lastChecked ? ` | Last checked: ${m.lastChecked}` : ""}\n  Seen: ${m.seenIds.length} listings`
-      )
-      .join("\n\n");
-
-    return {
-      content: [{ type: "text" as const, text: `## Saved Monitors\n\n${list}` }],
-    };
-  };
+  return guarded(async () => result({ monitors: loadMonitors().map(({ seenIds, prices, ...monitor }) => ({ ...monitor, seenCount: seenIds.length })), scheduling: "Saved search definitions do not confirm that the Ubuntu timer is active. Check systemctl --user status facebook-marketplace.timer." }));
 }

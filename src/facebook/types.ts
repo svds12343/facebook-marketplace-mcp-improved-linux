@@ -30,6 +30,9 @@ export interface MarketplaceListing {
   postedDate: string;
   url: string;
   isPending: boolean;
+  priceAmount?: number;
+  currency?: string;
+  sellerId?: string;
 }
 
 export interface MarketplaceListingDetail extends MarketplaceListing {
@@ -78,4 +81,18 @@ export interface SavedMonitor {
   seenIds: string[];
   createdAt: string;
   lastChecked: string | null;
+  filters?: ListingFilters;
+  maxPages?: number;
+  inspectLimit?: number;
+  targetPrice?: number;
+  targetCurrency?: string;
+  prices?: Record<string, { amount: number; currency: string }>;
+}
+
+export interface ListingFilters {
+  exclude_keywords?: string[];
+  exclude_ids?: string[];
+  hide_seen?: boolean;
+  max_age_days?: number;
+  include_unknown_age?: boolean;
 }

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
+import { updateState } from "../storage/state.js";
+import { observeListing, priceSignals } from "../analysis/prices.js";
 
 export const getListingSchema = {
   listing_id: z.string().regex(/^\d+$/).describe("Numeric Facebook Marketplace listing ID"),
@@ -9,6 +11,9 @@ export function createListingHandler(client: FacebookClient) {
   return async (args: { listing_id: string }) => {
     try {
       const listing = await client.getListingDetail(args.listing_id);
+      if (!listing.title && !listing.price) throw new Error("Listing unavailable or page format changed; details could not be verified.");
+      await updateState(state => observeListing(state, listing, new Date().toISOString(), listing.description, true));
+      const priceReview = priceSignals(listing, listing.description);
 
       const parts = [
         `# ${listing.title}`,
@@ -41,7 +46,7 @@ export function createListingHandler(client: FacebookClient) {
 
       return {
         content: [{ type: "text" as const, text: parts }],
-        structuredContent: { listing },
+        structuredContent: { listing, priceReview },
       };
     } catch (error) {
       return {

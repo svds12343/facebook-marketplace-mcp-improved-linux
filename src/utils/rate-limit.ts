@@ -1,36 +1,36 @@
-export class RateLimiter {
-  private maxPerMinute: number;
-  private timestamps: number[] = [];
+import fs from "node:fs";
+import path from "node:path";
+import { reserveAutomatedRequest } from "../monitoring/control.js";
+import { dataDirectory } from "../config.js";
+import { withLock } from "../storage/state.js";
+import { writePrivateJson } from "./private-file.js";
 
-  constructor(maxPerMinute: number) {
-    this.maxPerMinute = maxPerMinute;
-  }
-
-  async wait(): Promise<void> {
-    const now = Date.now();
-    // Remove timestamps older than 1 minute
-    this.timestamps = this.timestamps.filter((t) => now - t < 60_000);
-
-    if (this.timestamps.length >= this.maxPerMinute) {
-      const oldest = this.timestamps[0];
-      const waitMs = 60_000 - (now - oldest);
-      if (waitMs > 0) {
-        // Add random jitter (1-3s)
-        const jitter = 1000 + Math.random() * 2000;
-        await sleep(waitMs + jitter);
-      }
-    } else {
-      // Add small jitter between requests (500ms - 2s)
-      const jitter = 500 + Math.random() * 1500;
-      if (this.timestamps.length > 0) {
-        await sleep(jitter);
-      }
+/** Reserve a slot shared by SSH MCP processes and the Ubuntu scheduler. */
+export async function reserveRequestSlot(maxPerMinute: number, now: number | undefined = undefined, automated = false): Promise<number> {
+  return withLock("request-rate", async () => {
+    const stamp = now ?? Date.now();
+    const filename = path.join(dataDirectory(), "request-times.json");
+    const stored: unknown = fs.existsSync(filename) ? JSON.parse(fs.readFileSync(filename, "utf8")) : [];
+    if (!Array.isArray(stored) || stored.some(t => typeof t !== "number" || !Number.isFinite(t))) throw new Error("Invalid request-times.json; rate limit state needs repair.");
+    const times = stored.filter(t => stamp - t < 60000).sort((a, b) => a - b);
+    const wait = Math.max(0, times.length >= maxPerMinute ? times[times.length - maxPerMinute] + 60000 - stamp : 0, (times.at(-1) ?? 0) + 1000 - stamp);
+    if (wait) return wait;
+    if (automated) {
+      const automatedWait = await reserveAutomatedRequest(stamp);
+      if (automatedWait) return automatedWait;
     }
-
-    this.timestamps.push(Date.now());
-  }
+    times.push(stamp);
+    writePrivateJson(filename, times);
+    return 0;
+  });
 }
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export class RateLimiter {
+  constructor(private maxPerMinute: number, private automated = false) {}
+  async wait(): Promise<void> {
+    for (;;) {
+      const wait = await reserveRequestSlot(this.maxPerMinute, undefined, this.automated);
+      if (!wait) return;
+      await new Promise(resolve => setTimeout(resolve, Math.min(wait + 100 + Math.random() * 200, 60000)));
+    }
+  }
 }

@@ -82,3 +82,20 @@ test('401 clears the session and gives a login instruction', async t => {
   await client.ensureSession();
   assert.equal(requests.filter(request => request.url.endsWith('/marketplace/')).length, 2);
 });
+
+test('429 responses pause background activity and never retry automatically', async t => {
+  const { automationStatus } = await import('../dist/monitoring/control.js');
+  const { client, requests } = setup(t, {}, 429);
+  await assert.rejects(client.searchListings(params), /429/);
+  assert.match(automationStatus().pausedReason, /429/);
+  assert.equal(requests.length, 2);
+});
+
+test('login redirects are not followed and permanently pause background requests', async t => {
+  const { automationStatus } = await import('../dist/monitoring/control.js');
+  const { client, requests } = setup(t, {}, 302);
+  await assert.rejects(client.searchListings(params), /redirected/);
+  assert.match(automationStatus().pausedReason, /redirected/);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.redirect, 'manual');
+});

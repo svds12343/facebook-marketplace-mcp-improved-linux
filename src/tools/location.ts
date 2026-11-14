@@ -5,7 +5,7 @@ export const searchLocationSchema = {
   query: z
     .string()
     .describe(
-      "Location search query (e.g. 'Dedham MA', 'Boston', 'Brooklyn NY')"
+      "City/town with country or region, e.g. 'Morges Switzerland', 'Lausanne Switzerland'"
     ),
 };
 
@@ -19,9 +19,10 @@ export function createLocationHandler(client: FacebookClient) {
           content: [
             {
               type: "text" as const,
-              text: `No locations found for "${args.query}". Try a city or town name with state abbreviation.`,
+              text: `No locations found for "${args.query}". Try a city or town name with country or region.`,
             },
           ],
+          structuredContent: { locations: results },
         };
       }
 
@@ -37,6 +38,7 @@ export function createLocationHandler(client: FacebookClient) {
             text: `Found ${results.length} location(s) for "${args.query}":\n\n${lines.join("\n")}\n\nUse these coordinates with search_listings.`,
           },
         ],
+        structuredContent: { locations: results },
       };
     } catch (error) {
       return {

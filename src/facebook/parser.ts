@@ -8,6 +8,13 @@ import type {
 
 type JsonRecord = Record<string, unknown>;
 
+function numericPrice(price: JsonRecord | undefined): { priceAmount?: number; currency?: string } {
+  const amount = typeof price?.amount === "number" || typeof price?.amount === "string" && price.amount.trim() !== "" ? Number(price.amount) : NaN;
+  const currency = typeof price?.currency === "string" ? price.currency.toUpperCase() : undefined;
+  return Number.isFinite(amount) && amount >= 0 && currency && /^[A-Z]{3}$/.test(currency)
+    ? { priceAmount: amount, currency } : {};
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -97,7 +104,7 @@ function parseSearchListing(edge: unknown): MarketplaceListing | null {
       : typeof listing.id === "number" && Number.isFinite(listing.id)
         ? String(listing.id)
         : "";
-  if (!id.trim()) return null;
+  if (!/^\d+$/.test(id)) return null;
 
   const price = isRecord(listing.listing_price) ? listing.listing_price : {};
   const location = isRecord(listing.location) ? listing.location : {};
@@ -123,6 +130,8 @@ function parseSearchListing(edge: unknown): MarketplaceListing | null {
 
   return {
     id,
+    ...numericPrice(price),
+    ...(textValue(seller.id) ? { sellerId: textValue(seller.id) } : {}),
     title: textValue(listing.marketplace_listing_title),
     price:
       textValue(price.formatted_amount_zeros_stripped) || textValue(price.formatted_amount) || textValue(price.amount) || "N/A",
@@ -252,6 +261,7 @@ export function parseListingDetailFromPage(
       textValue(price?.formatted_amount_zeros_stripped) ||
       textValue(price?.formatted_amount) ||
       textValue(price?.amount);
+    Object.assign(detail, numericPrice(price));
     const location = isRecord(listing.location) ? listing.location : undefined;
     const reverseGeocode = isRecord(location?.reverse_geocode)
       ? location.reverse_geocode
@@ -280,6 +290,7 @@ export function parseListingDetailFromPage(
     detail.sellerName = textValue(seller?.name);
     detail.seller.name = detail.sellerName;
     const sellerId = textValue(seller?.id);
+    if (sellerId) detail.sellerId = sellerId;
     if (sellerId)
       detail.seller.profileUrl = `https://www.facebook.com/${sellerId}`;
     detail.condition =

@@ -1,6 +1,6 @@
 {
   "name": "facebook-marketplace-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for Facebook Marketplace — direct GraphQL API access",
   "type": "module",
   "main": "dist/index.js",
@@ -15,11 +15,20 @@
     "auth:check": "tsx scripts/check-auth.ts",
     "test": "npm run build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
-    "capture-queries": "tsx scripts/capture-queries.ts"
+    "capture-queries": "tsx scripts/capture-queries.ts",
+    "monitors:check": "node dist/cli/check-monitors.js",
+    "monitors:install": "node scripts/install-monitor-timer.mjs",
+    "monitors:uninstall": "node scripts/install-monitor-timer.mjs --uninstall",
+    "monitors:status": "node dist/cli/automation.js status",
+    "monitors:enable": "node dist/cli/automation.js enable",
+    "monitors:pause": "node dist/cli/automation.js pause",
+    "monitors:resume": "node dist/cli/automation.js resume"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.25.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "proper-lockfile": "^4.1.2",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
   },
   "engines": {
     "node": ">=22"
@@ -30,6 +39,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "playwright": "^1.56.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

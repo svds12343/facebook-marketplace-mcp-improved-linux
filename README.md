@@ -1,8 +1,8 @@
 # Facebook Marketplace MCP: Ubuntu / SSH edition
 
-A read-only Marketplace MCP server adapted from [jdcodes1/facebook-marketplace-mcp](https://github.com/jdcodes1/facebook-marketplace-mcp). Log in through a dedicated browser window forwarded by MobaXterm, then run the MCP from the CLI with no browser or X display required.
+A Marketplace MCP server that reads Facebook and stores tracking data locally, adapted from [jdcodes1/facebook-marketplace-mcp](https://github.com/jdcodes1/facebook-marketplace-mcp). Log in through a dedicated browser window forwarded by MobaXterm, then run the MCP from the CLI with no browser or X display required.
 
-This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, and actual listing images for visual inspection. Existing MCP tool names remain unchanged. [Fork review and attribution](docs/FORK_REVIEW.md).
+This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, actual listing images, bounded multi-page monitoring, a local alert inbox, price history, keyword/age/seen filters, and evidence-based checks for reused photos and inconsistent prices. Existing MCP tool names remain unchanged. Background requests are disabled by default. [Fork review and attribution](docs/FORK_REVIEW.md).
 
 ## Requirements
 
@@ -119,9 +119,14 @@ Set up a working SSH key/login for that SSH executable and accept the host key i
 | `get_listing` | Read the requested listing's title, description, price, condition, photos and seller. |
 | `get_listing_images` | Return actual listing photos as MCP image content so an image-capable model can inspect them. |
 | `monitor_search` | Save a search locally. |
-| `check_monitors` | Check the first page of saved searches for previously unseen IDs. |
+| `check_monitors` | Check multiple pages and watched offers within a request budget; record alerts and coverage. |
 | `list_monitors` | List saved searches. |
 | `delete_monitor` | Delete a monitor by `name`. |
+| `watch_listing`, `list_watches`, `unwatch_listing` | Track a particular listing against a target price/currency, including after it leaves search pages. |
+| `get_price_history` | Read locally observed price changes. |
+| `read_alerts`, `acknowledge_alerts` | Read the local alert inbox and explicitly mark selected alerts read. |
+| `assess_listing` | Inspect price inconsistencies, photo reuse and low-resolution photos; returns evidence and limitations. |
+| `automation_status`, `pause_automation` | Inspect or immediately stop background request activity without contacting Facebook. |
 
 ### Search options
 
@@ -136,10 +141,17 @@ Required: `query`, `latitude`, `longitude`.
 | `sort_by` | `suggested`, `distance`, `date_listed` (newest), `price_low_to_high`, `price_high_to_low`. |
 | `delivery_method` | `all`, `local_pickup`, `shipping`. |
 | `cursor` | Previous result's `endCursor`; keep the query and filters unchanged. |
+| `exclude_keywords` | Up to 100 literal words/phrases; case/accent insensitive. Checks titles and cached descriptions; unfetched descriptions remain unchecked. |
+| `exclude_ids` | Up to 2,000 listing IDs to omit. |
+| `hide_seen` | Omit IDs previously returned by searches, opened with `get_listing`/`assess_listing`, or recorded by monitor checks on this server. |
+| `max_age_days` | Maximum posting age from Facebook's timestamp. Never substitutes the local first-seen time. |
+| `include_unknown_age` | Default false when an age filter is used. Set true to retain offers without a usable posting date. |
 
 Search returns readable text and `structuredContent` with `listings`, `hasNextPage`, `endCursor`, `paginationStatus` and `effectiveRadiusKm`. A larger returned page is not truncated, since that would skip listings when advancing Facebook's cursor. IDs are deduplicated within the page. Stop when pagination is `end` or `stalled`; callers should also remember earlier cursors and bound the number of pages they request. Empty pages can still have a continuation cursor.
 
-Saved monitors support the same sort/delivery filters, but only inspect one page per check and do not schedule themselves. An unseen ID is not proof a listing was just posted. There are no messaging or listing-creation tools.
+Saved monitors support the same filters and default to newest-first sorting, up to three pages, and no automatic photo inspection. Monitor checks save new-offer, price-drop, target-crossing and review alerts. The first check can report existing offers as newly encountered; it does not establish that they were just posted. No Facebook messaging or listing-creation tools are exposed.
+
+Search and listing-detail tools now persist observed prices and seen IDs locally, so they are annotated as state-changing even though they do not modify Facebook. All tools declare their read/write behavior and output schemas. [Monitoring, risk checks and conservative automation setup](docs/MONITORING.md).
 
 ### Inspect listing photos
 
@@ -164,10 +176,10 @@ Implementation references checked against the official documentation:
 After updating on Ubuntu, rebuild and restart the MCP connection in ChatGPT Desktop so it discovers the new tool:
 
 ```bash
-git pull --ff-only && npm run build
+git pull --ff-only && npm ci && npm run build
 ```
 
-The image transport is tested through a real MCP stdio client with fixture photos. Live Facebook CDN access and visual interpretation in your installed ChatGPT Desktop version still require a live listing test. If the client does not pass image blocks to the model, download the numbered photo URLs from `get_listing` and attach those photos directly in chat.
+The image transport and tracking tools are tested through a real MCP stdio client with fixtures. Live Facebook CDN access and visual interpretation in your installed ChatGPT Desktop version still require a live listing test. If the client does not pass image blocks to the model, download the numbered photo URLs from `get_listing` and attach those photos directly in chat.
 
 ## Refresh Facebook query IDs
 

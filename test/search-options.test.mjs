@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-search-'));
+const oldDataDir = process.env.FB_DATA_DIR;
+before(() => { process.env.FB_DATA_DIR = directory; });
+after(() => { if (oldDataDir === undefined) delete process.env.FB_DATA_DIR; else process.env.FB_DATA_DIR = oldDataDir; fs.rmSync(directory, { recursive: true, force: true }); });
 import { z } from 'zod';
 import { buildSearchVariables, buildLocationSearchVariables } from '../dist/facebook/queries.js';
 import { createSearchHandler, searchListingsSchema } from '../dist/tools/search.js';

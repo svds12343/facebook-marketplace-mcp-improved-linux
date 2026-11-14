@@ -17,6 +17,7 @@ import {
   buildLocationSearchVariables,
 } from "./queries.js";
 import { parseSearchResponse, parseListingDetailFromPage } from "./parser.js";
+import { suspendAutomation } from "../monitoring/control.js";
 import { RateLimiter } from "../utils/rate-limit.js";
 import { queryDocId } from "./query-config.js";
 
@@ -47,10 +48,11 @@ export class FacebookClient {
   constructor(
     options: {
       maxRequestsPerMinute?: number;
+      automated?: boolean;
       chromeProfile?: string;
     } = {}
   ) {
-    this.rateLimiter = new RateLimiter(options.maxRequestsPerMinute ?? 3);
+    this.rateLimiter = new RateLimiter(options.maxRequestsPerMinute ?? 3, options.automated ?? false);
     this.chromeProfile = options.chromeProfile ?? "Default";
   }
 
@@ -100,10 +102,17 @@ export class FacebookClient {
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       },
-      redirect: "follow",
+      redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
 
+    if (res.status >= 300 && res.status < 400) {
+      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
+      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
+    }
+    if ([401, 403, 429].includes(res.status)) {
+      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
+    }
     if (!res.ok) {
       throw new Error(
         `Failed to fetch marketplace page: ${res.status} ${res.statusText}`
@@ -111,6 +120,10 @@ export class FacebookClient {
     }
 
     const html = await res.text();
+    if (/\/(checkpoint|login)(?:\/|\?|$)/i.test(res.url) || /<form[^>]+id=["']login_form|you[’']re temporarily blocked/i.test(html)) {
+      await suspendAutomation("Facebook returned a login, checkpoint or temporary-block page.");
+      throw new Error("Facebook requires manual login/checkpoint review. Background checks were paused.");
+    }
 
     // Extract fb_dtsg from DTSGInitData or DTSGInitialData
     const dtsgMatch =
@@ -119,6 +132,7 @@ export class FacebookClient {
       html.match(/"dtsg"\s*:\s*\{"token"\s*:\s*"([^"]+)"/);
 
     if (!dtsgMatch) {
+      await suspendAutomation("Marketplace session token unavailable; review login/checkpoints or a page-format change.");
       throw new Error(
         "Failed to extract fb_dtsg. The session may be expired, Facebook may require a checkpoint, or its page format changed. Run npm run login and check Marketplace in the browser."
       );
@@ -182,11 +196,19 @@ export class FacebookClient {
     });
 
     if (res.status === 401 || res.status === 403) {
-      // Session expired — clear and retry once
+      await suspendAutomation(`Facebook HTTP ${res.status}; manual login review required.`);
+      // Session expired: clear local credentials and require manual reauthentication.
       this.session = null;
       throw new Error("Facebook rejected the session. Run npm run login, then retry.");
     }
 
+    if (res.status >= 300 && res.status < 400) {
+      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
+      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
+    }
+    if ([401, 403, 429].includes(res.status)) {
+      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
+    }
     if (!res.ok) {
       throw new Error(`GraphQL request failed: ${res.status} ${res.statusText}`);
     }
@@ -203,9 +225,11 @@ export class FacebookClient {
     try {
       data = JSON.parse(text);
     } catch {
+      await suspendAutomation("Facebook returned an unsupported response; inspect the session/page before resuming.");
       throw new Error("Facebook returned an unsupported response. Check login with npm run auth:check; refresh query IDs with npm run capture-queries.");
     }
     if (data.errors?.length || data.error) {
+      await suspendAutomation("Facebook returned a GraphQL error; inspect restrictions or query changes before resuming.");
       this.session = null;
       throw new Error("Facebook returned a GraphQL error. Check login with npm run auth:check; if it passes, run npm run capture-queries. Facebook may have changed its API or restricted the request.");
     }
@@ -240,15 +264,26 @@ export class FacebookClient {
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       },
-      redirect: "follow",
+      redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
 
+    if (res.status >= 300 && res.status < 400) {
+      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
+      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
+    }
+    if ([401, 403, 429].includes(res.status)) {
+      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
+    }
     if (!res.ok) {
       throw new Error(`Failed to fetch listing ${listingId}: ${res.status}`);
     }
 
     const html = await res.text();
+    if (/\/(checkpoint|login)(?:\/|\?|$)/i.test(res.url) || /<form[^>]+id=["']login_form|you[’']re temporarily blocked/i.test(html)) {
+      await suspendAutomation("Facebook returned a login, checkpoint or temporary-block page.");
+      throw new Error("Facebook requires manual login/checkpoint review. Background checks were paused.");
+    }
     return parseListingDetailFromPage(html, listingId);
   }
 
