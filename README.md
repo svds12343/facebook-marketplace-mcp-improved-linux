@@ -6,7 +6,7 @@ This fork adds Ubuntu login, JSON-session import, private session storage, query
 
 ## Requirements
 
-- Ubuntu 22.04 or 24.04, a normal non-root user, and **Node.js 22+** with npm. Node 24 LTS is recommended. Check with `node --version`; Ubuntu's default `nodejs` package may be too old.
+- Ubuntu 22.04 or 24.04 and a normal non-root user. The setup script uses an existing **Node.js 22+** with npm, or installs **Node.js 24** and npm for your user through [nvm](https://github.com/nvm-sh/nvm). Ubuntu's default `nodejs` package may be too old.
 - A Facebook account that can access Marketplace.
 - For interactive login only: MobaXterm's local X server and SSH X11 forwarding. No desktop environment is needed on Ubuntu.
 - The included setup script installs Chromium and its Linux libraries through Playwright. It may request sudo for system packages; run the script itself as your normal user.
@@ -29,12 +29,11 @@ This fork adds Ubuntu login, JSON-session import, private session storage, query
    ```bash
    git clone https://github.com/svds12343/facebook-marketplace-mcp-improved-linux.git
    cd facebook-marketplace-mcp-improved-linux
-   bash scripts/setup-ubuntu.sh
-   npm run login
+   bash scripts/setup-ubuntu.sh --login
    ```
 
 4. In the forwarded Chromium window, sign into Facebook, complete any verification, and open Marketplace. Return to the terminal and press **Enter**. Keep the browser open until the command saves the session.
-5. Verify that Facebook accepts it:
+5. The setup command automatically runs `auth:check` after login. To repeat that check later:
 
    ```bash
    npm run auth:check
@@ -43,6 +42,8 @@ This fork adds Ubuntu login, JSON-session import, private session storage, query
    This checks cookies and the Marketplace session token. It does not establish that search queries still work. Then test `search_listings` from your MCP client.
 
 Login writes `~/.fb-marketplace/session.json` with mode `0600`. The dedicated profile is `~/.fb-marketplace/browser-profile` with mode `0700`. After login, X11 forwarding is no longer needed for MCP requests. Re-run login when Facebook expires or rejects the session.
+
+If setup installed nvm, a new terminal should load it from your shell profile. In an already-open terminal, source `$NVM_DIR/nvm.sh` (normally `~/.nvm/nvm.sh`) and run `nvm use 24` before using npm. The `--login` setup option avoids this extra step by running login and verification in the same shell as installation. No global Node installation is replaced.
 
 ### Manual installation
 
@@ -167,6 +168,7 @@ Paths are resolved independently of the working directory by default. Use absolu
 ## Troubleshooting
 
 - **`DISPLAY is empty` / no window:** enable X11 forwarding in MobaXterm, start its X server and reconnect. Ensure Ubuntu has `xauth` and the effective SSH server configuration allows `X11Forwarding yes`. Test `xclock` before trying Chromium.
+- **`npm` missing / Node too old:** run `git pull --ff-only && bash scripts/setup-ubuntu.sh --login`. Setup now installs a suitable Node.js/npm automatically and stops if any installation step fails.
 - **Missing browser executable/libraries:** `npx playwright install --with-deps chromium`.
 - **Root / sandbox error:** use a normal Ubuntu user. Some Ubuntu/container policies restrict Chromium user namespaces. Use a supported system Chrome installation with `FB_BROWSER_CHANNEL=chrome npm run login`, or use the cookie-import route. The login command does not disable Chromium's sandbox.
 - **Profile already in use:** close the dedicated login/capture browser before starting another login/capture command. Ordinary MCP searches do not open that profile.
