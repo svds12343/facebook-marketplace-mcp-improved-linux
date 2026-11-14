@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
 
 export const getListingSchema = {
-  listing_id: z.string().describe("Facebook Marketplace listing ID"),
+  listing_id: z.string().regex(/^\d+$/).describe("Numeric Facebook Marketplace listing ID"),
 };
 
 export function createListingHandler(client: FacebookClient) {
@@ -38,6 +38,7 @@ export function createListingHandler(client: FacebookClient) {
 
       return {
         content: [{ type: "text" as const, text: parts }],
+        structuredContent: { listing },
       };
     } catch (error) {
       return {

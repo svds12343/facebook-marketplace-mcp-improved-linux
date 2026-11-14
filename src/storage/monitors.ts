@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import crypto from "node:crypto";
+import { dataDirectory } from "../config.js";
 import type { SavedMonitor, SearchParams } from "../facebook/types.js";
 
-const STORAGE_DIR = path.join(os.homedir(), ".fb-marketplace");
+const STORAGE_DIR = dataDirectory();
 const MONITORS_FILE = path.join(STORAGE_DIR, "monitors.json");
 
 function ensureStorageDir() {
   if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+    fs.mkdirSync(STORAGE_DIR, { recursive: true, mode: 0o700 });
   }
 }
 

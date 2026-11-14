@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
+import type { SearchSortBy, DeliveryMethod } from "../facebook/types.js";
+import { searchOptionsSchema, searchListingsSchema } from "./search.js";
 import {
   addMonitor,
   loadMonitors,
@@ -10,13 +12,14 @@ import {
 
 export const monitorSearchSchema = {
   name: z.string().describe("Name for this saved search monitor"),
-  query: z.string().describe("Search query"),
-  latitude: z.number().describe("Latitude of search center"),
-  longitude: z.number().describe("Longitude of search center"),
-  radius_km: z.number().default(50).describe("Search radius in km"),
-  min_price: z.number().optional().describe("Min price filter in dollars"),
-  max_price: z.number().optional().describe("Max price filter in dollars"),
+  query: searchListingsSchema.query,
+  latitude: searchListingsSchema.latitude,
+  longitude: searchListingsSchema.longitude,
+  radius_km: searchListingsSchema.radius_km,
+  min_price: searchListingsSchema.min_price,
+  max_price: searchListingsSchema.max_price,
   category: z.string().optional().describe("Category ID"),
+  ...searchOptionsSchema,
 };
 
 export const checkMonitorsSchema = {
@@ -42,8 +45,13 @@ export function createMonitorSearchHandler() {
     min_price?: number;
     max_price?: number;
     category?: string;
+    sort_by?: SearchSortBy;
+    delivery_method?: DeliveryMethod;
   }) => {
     try {
+      if (args.min_price !== undefined && args.max_price !== undefined && args.min_price > args.max_price) {
+        throw new Error("min_price must not exceed max_price.");
+      }
       const monitor = addMonitor(args.name, {
         query: args.query,
         latitude: args.latitude,
@@ -52,6 +60,8 @@ export function createMonitorSearchHandler() {
         minPrice: args.min_price,
         maxPrice: args.max_price,
         category: args.category,
+        sortBy: args.sort_by,
+        deliveryMethod: args.delivery_method,
         limit: 24,
       });
 
@@ -126,6 +136,9 @@ export function createCheckMonitorsHandler(client: FacebookClient) {
         } else {
           updateMonitorSeenIds(monitor.name, []);
           results.push(`### ${monitor.name} — no new listings`);
+        }
+        if (searchResult.hasNextPage) {
+          results.push(`Only the first page of "${monitor.name}" was checked; more results may exist.`);
         }
       }
 

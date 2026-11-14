@@ -1,3 +1,5 @@
+// Adapted from AKosmachyov/facebook-marketplace-mcp PR #4, commit 0e1a4697af4f8272ac3be2e32199689cecdd3562.
+// See docs/FORK_REVIEW.md for sources and the changes retained in this fork.
 export interface FacebookCookie {
   host: string;
   name: string;
@@ -40,6 +42,15 @@ export interface MarketplaceListingDetail extends MarketplaceListing {
   };
 }
 
+export type SearchSortBy =
+  | "suggested"
+  | "distance"
+  | "date_listed"
+  | "price_low_to_high"
+  | "price_high_to_low";
+
+export type DeliveryMethod = "all" | "local_pickup" | "shipping";
+
 export interface SearchParams {
   query: string;
   latitude: number;
@@ -48,6 +59,8 @@ export interface SearchParams {
   minPrice?: number;
   maxPrice?: number;
   category?: string;
+  sortBy?: SearchSortBy;
+  deliveryMethod?: DeliveryMethod;
   limit: number;
   cursor?: string;
 }

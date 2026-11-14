@@ -5,7 +5,7 @@ import type {
   MarketplaceListingDetail,
 } from "./types.js";
 import {
-  extractChromeCookies,
+  loadFacebookAuth,
   cookiesToHeader,
   getCookieValue,
 } from "./auth.js";
@@ -18,19 +18,18 @@ import {
 } from "./queries.js";
 import { parseSearchResponse, parseListingDetailFromPage } from "./parser.js";
 import { RateLimiter } from "../utils/rate-limit.js";
+import { queryDocId } from "./query-config.js";
 
 const GRAPHQL_URL = "https://www.facebook.com/api/graphql/";
 const MARKETPLACE_URL = "https://www.facebook.com/marketplace/";
 
-const USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
+const PLATFORM = process.platform === "darwin" ? "Macintosh; Intel Mac OS X 10_15_7"
+  : process.platform === "win32" ? "Windows NT 10.0; Win64; x64" : "X11; Linux x86_64";
+const USER_AGENT = `Mozilla/5.0 (${PLATFORM}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36`;
 
 const BROWSER_HEADERS: Record<string, string> = {
   "User-Agent": USER_AGENT,
   "Accept-Language": "en-US,en;q=0.9",
-  "sec-ch-ua": '"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="99"',
-  "sec-ch-ua-mobile": "?0",
-  "sec-ch-ua-platform": '"macOS"',
   "sec-fetch-dest": "document",
   "sec-fetch-mode": "navigate",
   "sec-fetch-site": "none",
@@ -43,6 +42,7 @@ export class FacebookClient {
   private rateLimiter: RateLimiter;
   private reqCounter = 0;
   private chromeProfile: string;
+  private browserHeaders = { ...BROWSER_HEADERS };
 
   constructor(
     options: {
@@ -60,18 +60,13 @@ export class FacebookClient {
   }
 
   async initSession(): Promise<FacebookSession> {
-    const cookies = extractChromeCookies("facebook.com", this.chromeProfile);
-
-    if (cookies.length === 0) {
-      throw new Error(
-        "No Facebook cookies found in Chrome. Make sure you're logged into Facebook in Chrome."
-      );
-    }
+    const { cookies, userAgent } = await loadFacebookAuth(this.chromeProfile);
+    this.browserHeaders = { ...BROWSER_HEADERS, "User-Agent": userAgent ?? USER_AGENT };
 
     const userId = getCookieValue(cookies, "c_user");
     if (!userId) {
       throw new Error(
-        "No c_user cookie found. Make sure you're logged into Facebook in Chrome."
+        "No c_user cookie found. Run npm run login to save a Facebook session."
       );
     }
 
@@ -100,12 +95,13 @@ export class FacebookClient {
 
     const res = await fetch(MARKETPLACE_URL, {
       headers: {
-        ...BROWSER_HEADERS,
+        ...this.browserHeaders,
         Cookie: cookieHeader,
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       },
       redirect: "follow",
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!res.ok) {
@@ -124,7 +120,7 @@ export class FacebookClient {
 
     if (!dtsgMatch) {
       throw new Error(
-        "Failed to extract fb_dtsg token. Session may be expired — try logging into Facebook in Chrome again."
+        "Failed to extract fb_dtsg. The session may be expired, Facebook may require a checkpoint, or its page format changed. Run npm run login and check Marketplace in the browser."
       );
     }
     const fbDtsg = dtsgMatch[1];
@@ -169,8 +165,8 @@ export class FacebookClient {
     const res = await fetch(GRAPHQL_URL, {
       method: "POST",
       headers: {
-        ...BROWSER_HEADERS,
-        Cookie: session.cookieHeader,
+        ...this.browserHeaders,
+        Cookie: cookiesToHeader(session.cookies, GRAPHQL_URL),
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "*/*",
         "sec-fetch-dest": "empty",
@@ -181,12 +177,14 @@ export class FacebookClient {
         "X-FB-LSD": session.lsd,
       },
       body: body.toString(),
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (res.status === 401 || res.status === 403) {
       // Session expired — clear and retry once
       this.session = null;
-      throw new Error("Session expired. Re-initializing on next request.");
+      throw new Error("Facebook rejected the session. Run npm run login, then retry.");
     }
 
     if (!res.ok) {
@@ -201,16 +199,22 @@ export class FacebookClient {
       text = text.slice(jsonStart);
     }
 
+    let data: any;
     try {
-      return JSON.parse(text);
+      data = JSON.parse(text);
     } catch {
-      throw new Error(`Failed to parse GraphQL response: ${text.slice(0, 200)}`);
+      throw new Error("Facebook returned an unsupported response. Check login with npm run auth:check; refresh query IDs with npm run capture-queries.");
     }
+    if (data.errors?.length || data.error) {
+      this.session = null;
+      throw new Error("Facebook returned a GraphQL error. Check login with npm run auth:check; if it passes, run npm run capture-queries. Facebook may have changed its API or restricted the request.");
+    }
+    return data;
   }
 
   async searchListings(params: SearchParams): Promise<SearchResult> {
     const variables = buildSearchVariables(params);
-    const data = await this.graphqlRequest(MARKETPLACE_SEARCH_DOC_ID, variables);
+    const data = await this.graphqlRequest(queryDocId("marketplace_search", MARKETPLACE_SEARCH_DOC_ID), variables);
     return parseSearchResponse(data);
   }
 
@@ -231,12 +235,13 @@ export class FacebookClient {
     const url = `https://www.facebook.com/marketplace/item/${listingId}/`;
     const res = await fetch(url, {
       headers: {
-        ...BROWSER_HEADERS,
-        Cookie: session.cookieHeader,
+        ...this.browserHeaders,
+        Cookie: cookiesToHeader(session.cookies, url),
         Accept:
           "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       },
       redirect: "follow",
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!res.ok) {
@@ -251,7 +256,10 @@ export class FacebookClient {
     query: string
   ): Promise<Array<{ name: string; latitude: number; longitude: number }>> {
     const variables = buildLocationSearchVariables(query);
-    const data = await this.graphqlRequest(LOCATION_SEARCH_DOC_ID, variables);
+    const data = await this.graphqlRequest(queryDocId("city_street_search", LOCATION_SEARCH_DOC_ID), variables);
+    if (!(data as any)?.data?.city_street_search?.street_results) {
+      throw new Error("Facebook returned an unrecognized location response. Run npm run capture-queries; the response parser may also need updating.");
+    }
 
     try {
       const results = (data as any)?.data?.city_street_search?.street_results?.edges ?? [];

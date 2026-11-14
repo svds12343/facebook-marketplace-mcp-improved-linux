@@ -1,154 +1,46 @@
 #!/usr/bin/env tsx
+import { queriesFile } from "../src/config.js";
+import { identifyQuery, readQueryIds, saveQueryIds, type QueryIds } from "../src/facebook/query-config.js";
+import { openLoginBrowser, saveBrowserSession, waitForEnter } from "./lib/browser.js";
 
-/**
- * Query Capture Script
- *
- * Launches a browser, navigates Facebook Marketplace, and intercepts
- * GraphQL requests to discover current doc_id values.
- *
- * Prerequisites:
- *   npm install -D playwright
- *   npx playwright install chromium
- *
- * Usage:
- *   npm run capture-queries
- *
- * This will:
- * 1. Open Chromium with your Chrome profile (so you're logged in)
- * 2. Navigate to Facebook Marketplace
- * 3. Perform a sample search
- * 4. Log all GraphQL doc_ids it finds
- * 5. Save them to src/facebook/queries.ts
- */
-
-import { chromium } from "playwright";
-import path from "node:path";
-import os from "node:os";
-import fs from "node:fs";
-
-const CHROME_USER_DATA = path.join(
-  os.homedir(),
-  "Library/Application Support/Google/Chrome"
-);
-
-interface CapturedQuery {
-  docId: string;
-  operationName: string;
-  variables: string;
-  timestamp: number;
-}
-
-async function main() {
-  console.log("🔍 Launching browser to capture GraphQL queries...\n");
-
-  const captured: CapturedQuery[] = [];
-
-  const browser = await chromium.launchPersistentContext(CHROME_USER_DATA, {
-    headless: false,
-    channel: "chrome",
-    args: ["--disable-blink-features=AutomationControlled"],
-  });
-
-  const page = browser.pages()[0] ?? (await browser.newPage());
-
-  // Intercept GraphQL requests
-  page.on("request", (req) => {
-    const url = req.url();
-    if (url.includes("/api/graphql")) {
-      const postData = req.postData() ?? "";
-      const params = new URLSearchParams(postData);
-      const docId = params.get("doc_id") ?? "";
-      const variables = params.get("variables") ?? "{}";
-
-      if (docId) {
-        // Try to guess operation name from variables
-        let opName = "unknown";
-        try {
-          const vars = JSON.parse(variables);
-          if (vars.params?.bqf?.callsite === "COMMERCE_MKTPLACE_WWW") {
-            opName = "marketplace_search";
-          } else if (vars.params?.caller === "MARKETPLACE") {
-            opName = "city_street_search";
-          } else if (vars.targetId) {
-            opName = "listing_detail";
-          }
-        } catch {
-          // ignore parse errors
-        }
-
-        captured.push({
-          docId,
-          operationName: opName,
-          variables: variables.slice(0, 200),
-          timestamp: Date.now(),
-        });
-
-        console.log(`📡 Captured: doc_id=${docId} op=${opName}`);
-      }
-    }
-  });
-
-  console.log("Navigating to Facebook Marketplace...");
-  await page.goto("https://www.facebook.com/marketplace/", {
-    waitUntil: "networkidle",
-    timeout: 30000,
-  });
-
-  console.log("\nPage loaded. Performing a sample search...");
-  await page.waitForTimeout(3000);
-
-  // Try to search
+async function main(): Promise<void> {
+  if (process.argv.includes("--help")) {
+    console.log("Usage: npm run capture-queries\nOpen Marketplace, run a search and change its location. Press Enter in the terminal to save compatible query IDs and the session.");
+    return;
+  }
+  const captured: QueryIds = {};
+  const context = await openLoginBrowser();
   try {
-    const searchInput = page.locator(
-      'input[placeholder*="Search"], input[aria-label*="Search"]'
-    );
-    if (await searchInput.isVisible({ timeout: 5000 })) {
-      await searchInput.fill("laptop");
-      await searchInput.press("Enter");
-      await page.waitForTimeout(5000);
+    context.on("request", request => {
+      const url = new URL(request.url());
+      if (url.origin !== "https://www.facebook.com" || !/^\/api\/graphql\/?$/.test(url.pathname)) return;
+      const query = identifyQuery(request.postData() ?? "");
+      if (query) {
+        captured[query.kind] = query.docId;
+        console.error(`Captured ${query.kind}: ${query.docId}`);
+      }
+    });
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.goto("https://www.facebook.com/marketplace/", { waitUntil: "domcontentloaded", timeout: 60_000 });
+    console.error("In the browser, sign in if needed, run a Marketplace search, then open the location selector and type a city. Only compatible query IDs are saved; request bodies and tokens are not logged.");
+    await waitForEnter(context, "Press Enter here when finished: ");
+    await saveBrowserSession(context);
+    if (!Object.keys(captured).length) {
+      throw new Error("No compatible queries captured. Existing query IDs were left unchanged. Facebook's request format may have changed.");
     }
-  } catch {
-    console.log("Could not find search input. Try searching manually.");
-  }
-
-  console.log("\n⏳ Waiting 30 seconds for more queries...");
-  console.log("   Browse around Marketplace to capture more doc_ids.");
-  console.log("   Click on listings, change categories, etc.\n");
-  await page.waitForTimeout(30000);
-
-  await browser.close();
-
-  // Deduplicate and display results
-  const unique = new Map<string, CapturedQuery>();
-  for (const q of captured) {
-    const key = `${q.docId}-${q.operationName}`;
-    if (!unique.has(key)) {
-      unique.set(key, q);
+    let existing: QueryIds;
+    try { existing = readQueryIds(); } catch { existing = {}; }
+    saveQueryIds({ ...existing, ...captured });
+    console.error(`Saved IDs to ${queriesFile()}. Future requests use them automatically, without rebuilding.`);
+    for (const kind of ["marketplace_search", "city_street_search"] as const) {
+      if (!captured[kind]) console.error(`No new ${kind} ID captured; its previous value remains in use.`);
     }
+  } finally {
+    await context.close();
   }
-
-  console.log("\n\n=== Captured GraphQL Queries ===\n");
-  for (const q of unique.values()) {
-    console.log(`doc_id: ${q.docId}`);
-    console.log(`  operation: ${q.operationName}`);
-    console.log(`  variables: ${q.variables}`);
-    console.log();
-  }
-
-  // Save to a JSON file for reference
-  const outputPath = path.join(
-    import.meta.dirname ?? ".",
-    "..",
-    "captured-queries.json"
-  );
-  fs.writeFileSync(
-    outputPath,
-    JSON.stringify([...unique.values()], null, 2)
-  );
-  console.log(`\nSaved to ${outputPath}`);
-  console.log(
-    "\nUpdate src/facebook/queries.ts with the new doc_id values if they changed."
-  );
 }
 
-main().catch(console.error);
+main().catch(error => {
+  console.error(error instanceof Error ? error.message : "Query capture failed.");
+  process.exitCode = 1;
+});

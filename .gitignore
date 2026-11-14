@@ -4,3 +4,12 @@ dist/
 .env.local
 *.db
 /tmp/
+.fb-marketplace/
+browser-profile/
+playwright/.auth/
+session.json
+cookies.json
+*-cookies.json
+storage-state.json
+auth.json
+captured-queries.json
