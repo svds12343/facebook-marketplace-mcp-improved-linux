@@ -30,6 +30,9 @@ export function createListingHandler(client: FacebookClient) {
         listing.images.length > 0
           ? `**Images:** ${listing.images.length} photo(s)\n${listing.images.map((u, i) => `  ${i + 1}. ${u}`).join("\n")}`
           : null,
+        listing.images.length > 0
+          ? "Use get_listing_images with this listing_id and photo_indices to inspect the actual photos. URLs alone are not image observations."
+          : null,
         "",
         `🔗 ${listing.url}`,
       ]

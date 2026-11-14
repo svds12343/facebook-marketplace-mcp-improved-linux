@@ -2,7 +2,7 @@
 
 A read-only Marketplace MCP server adapted from [jdcodes1/facebook-marketplace-mcp](https://github.com/jdcodes1/facebook-marketplace-mcp). Log in through a dedicated browser window forwarded by MobaXterm, then run the MCP from the CLI with no browser or X display required.
 
-This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, and safer listing extraction. Existing MCP tool names remain unchanged. [Fork review and attribution](docs/FORK_REVIEW.md).
+This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, and actual listing images for visual inspection. Existing MCP tool names remain unchanged. [Fork review and attribution](docs/FORK_REVIEW.md).
 
 ## Requirements
 
@@ -117,6 +117,7 @@ Set up a working SSH key/login for that SSH executable and accept the host key i
 | `search_location` | Look up city/town coordinates. |
 | `search_listings` | Search a single result page, with filters and a continuation cursor. |
 | `get_listing` | Read the requested listing's title, description, price, condition, photos and seller. |
+| `get_listing_images` | Return actual listing photos as MCP image content so an image-capable model can inspect them. |
 | `monitor_search` | Save a search locally. |
 | `check_monitors` | Check the first page of saved searches for previously unseen IDs. |
 | `list_monitors` | List saved searches. |
@@ -139,6 +140,34 @@ Required: `query`, `latitude`, `longitude`.
 Search returns readable text and `structuredContent` with `listings`, `hasNextPage`, `endCursor`, `paginationStatus` and `effectiveRadiusKm`. A larger returned page is not truncated, since that would skip listings when advancing Facebook's cursor. IDs are deduplicated within the page. Stop when pagination is `end` or `stalled`; callers should also remember earlier cursors and bound the number of pages they request. Empty pages can still have a continuation cursor.
 
 Saved monitors support the same sort/delivery filters, but only inspect one page per check and do not schedule themselves. An unseen ID is not proof a listing was just posted. There are no messaging or listing-creation tools.
+
+### Inspect listing photos
+
+`get_listing` returns numbered photo URLs. `get_listing_images` fetches the listing's current photo URLs and returns the image bytes in MCP `image` content blocks, with labels linking each image to its listing and photo number. The image bytes are not placed in text, `structuredContent`, or UI-only metadata.
+
+Call it with a numeric `listing_id`. It returns the first three photos by default. To choose photos or inspect additional ones, pass up to three 1-based `photo_indices`:
+
+```json
+{"listing_id":"123456789012345","photo_indices":[1,3]}
+```
+
+Example prompt: **"Use facebook-marketplace to open this listing and inspect its photos for visible wear, included accessories, and differences from the description."** The model must support images, and the MCP client must forward image content to it. An image displayed by a UI or a URL in a text result alone does not establish that the model inspected it. Photos can show visible details; they do not prove functionality or authenticity.
+
+Downloads accept JPEG, PNG, and WebP from HTTPS Facebook CDN hosts (`fbcdn.net` and `fbsbx.com`, including subdomains). Each photo is limited to 2 MiB and 15 seconds; redirects are bounded and rechecked. No Facebook cookies are sent to the image CDN, and downloaded image bytes are not saved to disk. Missing, expired, oversized, or unsupported photos produce explicit per-photo errors while other selected images can still be returned. The tool reports total photo count, returned photo numbers, and failures so the model can distinguish unseen photos.
+
+Implementation references checked against the official documentation:
+
+- [OpenAI tool-result reference](https://developers.openai.com/plugins/reference#tool-results): `content` and `structuredContent` are visible to the model; `_meta` is not.
+- [MCP TypeScript SDK image results](https://ts.sdk.modelcontextprotocol.io/server#image-and-audio-results): images use `type: "image"`, base64 `data`, and `mimeType` inside `content`.
+- [OpenAI MCP instructions](https://learn.chatgpt.com/docs/extend/mcp#supported-mcp-features): server instructions describe the search → listing → image workflow to Codex.
+
+After updating on Ubuntu, rebuild and restart the MCP connection in ChatGPT Desktop so it discovers the new tool:
+
+```bash
+git pull --ff-only && npm run build
+```
+
+The image transport is tested through a real MCP stdio client with fixture photos. Live Facebook CDN access and visual interpretation in your installed ChatGPT Desktop version still require a live listing test. If the client does not pass image blocks to the model, download the numbered photo URLs from `get_listing` and attach those photos directly in chat.
 
 ## Refresh Facebook query IDs
 
@@ -184,6 +213,6 @@ npm run typecheck
 npm test
 ```
 
-Tests use synthetic sessions and Facebook responses, plus a real MCP subprocess. They cover cookie filtering and expiry, private file writes, CLI import without X11, search/listing parsing, filters, and cursor handling. They make no Facebook requests. The build and these tests passing do **not** verify your account, your server's X11 connection, or today's Facebook endpoint behavior.
+Tests use synthetic sessions and Facebook responses, plus a real MCP subprocess. They cover cookie filtering and expiry, private file writes, CLI import without X11, search/listing parsing, filters, cursor handling, image transport, photo selection, and image-download boundaries. They make no Facebook requests. The build and these tests passing do **not** verify your account, your server's X11 connection, today's Facebook endpoint behavior, or visual interpretation by your MCP client/model.
 
 Facebook's internal API is unofficial and can change or restrict requests. The existing direct-request limit is three requests per minute. The optional macOS extraction path is retained but was not hardware-tested during this Ubuntu adaptation.
