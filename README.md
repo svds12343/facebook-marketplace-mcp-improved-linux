@@ -2,7 +2,7 @@
 
 A Marketplace MCP server that reads Facebook and stores tracking data locally, adapted from [jdcodes1/facebook-marketplace-mcp](https://github.com/jdcodes1/facebook-marketplace-mcp). Log in through a dedicated browser window forwarded by MobaXterm, then run the MCP from the CLI with no browser or X display required.
 
-This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, actual listing images, bounded multi-page monitoring, a local alert inbox, price history, keyword/age/seen filters, and evidence-based checks for reused photos and inconsistent prices. Existing MCP tool names remain unchanged. Background requests are disabled by default. [Fork review and attribution](docs/FORK_REVIEW.md).
+This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, actual listing images, bounded multi-page monitoring, a local alert inbox, price history, keyword/age/seen filters, and evidence-based checks for reused photos and inconsistent prices. Version 1.2 adds bounded searches across AI-chosen query variants, a recent-search cache, and reusable price benchmarks from AI-selected comparable offers. The AI makes the research and deal decisions; these new tools retrieve/store data and calculate statistics. Existing MCP tool names remain unchanged. Background requests are disabled by default. [Fork review and attribution](docs/FORK_REVIEW.md).
 
 ## Requirements
 
@@ -116,6 +116,9 @@ Set up a working SSH key/login for that SSH executable and accept the host key i
 | --- | --- |
 | `search_location` | Look up city/town coordinates. |
 | `search_listings` | Search a single result page, with filters and a continuation cursor. |
+| `smart_search` | Execute prioritized AI-chosen search variants within one shared budget, deduplicate IDs and reuse recent pages. |
+| `save_price_benchmark`, `get_price_benchmark` | Save AI-selected comparables, then calculate local asking-price statistics with source evidence. |
+| `list_price_benchmarks`, `delete_price_benchmark` | Find or remove saved comparison definitions. |
 | `get_listing` | Read the requested listing's title, description, price, condition, photos and seller. |
 | `get_listing_images` | Return actual listing photos as MCP image content so an image-capable model can inspect them. |
 | `monitor_search` | Save a search locally. |
@@ -152,6 +155,14 @@ Search returns readable text and `structuredContent` with `listings`, `hasNextPa
 Saved monitors support the same filters and default to newest-first sorting, up to three pages, and no automatic photo inspection. Monitor checks save new-offer, price-drop, target-crossing and review alerts. The first check can report existing offers as newly encountered; it does not establish that they were just posted. No Facebook messaging or listing-creation tools are exposed.
 
 Search and listing-detail tools now persist observed prices and seen IDs locally, so they are annotated as state-changing even though they do not modify Facebook. All tools declare their read/write behavior and output schemas. [Monitoring, risk checks and conservative automation setup](docs/MONITORING.md).
+
+### Smarter searches and reusable price references
+
+`smart_search` runs the AI's chosen French/English names, aliases, misspellings or broader seller wording in priority order. The default is **two new search-page calls per invocation**, with a hard maximum of three, no automatic pagination or retry, and a 30-minute cache. Returned query reports distinguish live, cached, deferred and failed searches. All new calls use the existing shared rate limit. A zero request budget searches only the cache.
+
+For comparisons, the AI selects the exact model/configuration, condition, accessories and geographic market, then saves observed listing IDs and matching notes with `save_price_benchmark`. `get_price_benchmark` calculates mean, median, range and quartiles from precisely that selection, without Facebook requests. It returns dates, links, pending status, repeated seller IDs and changed-detail facts so the AI can evaluate them. `selected_listing_ids` explicitly narrows the sample; `candidate_listing_id` keeps an evaluated offer out of its own baseline. The server does not generate a confidence verdict, deal score or resale recommendation, or automatically remove cheap, expensive, old or repeated-seller offers.
+
+These are **observed asking prices**, not verified sales. `calculationStatus: complete` means the arithmetic completed, not that the sample is reliable. Missing or mixed-currency prices make statistics unavailable for the whole selected set; the AI can revise the selection. Creating a benchmark does not schedule refreshes. Existing image handling is unchanged. [Workflow, parameters and examples](docs/DEAL_RESEARCH.md).
 
 ### Inspect listing photos
 

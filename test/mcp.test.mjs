@@ -21,8 +21,8 @@ test('MCP initializes and lists tools without DISPLAY, browser, cookies or nativ
     await client.connect(transport);
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name).sort(), [
-      'acknowledge_alerts', 'assess_listing', 'automation_status', 'check_monitors', 'delete_monitor', 'get_listing', 'get_listing_images', 'get_price_history', 'list_monitors', 'list_watches',
-      'monitor_search', 'pause_automation', 'read_alerts', 'search_listings', 'search_location', 'unwatch_listing', 'watch_listing',
+      'acknowledge_alerts', 'assess_listing', 'automation_status', 'check_monitors', 'delete_monitor', 'delete_price_benchmark', 'get_listing', 'get_listing_images', 'get_price_benchmark', 'get_price_history', 'list_monitors', 'list_price_benchmarks', 'list_watches',
+      'monitor_search', 'pause_automation', 'read_alerts', 'save_price_benchmark', 'search_listings', 'search_location', 'smart_search', 'unwatch_listing', 'watch_listing',
     ]);
     for (const tool of tools) {
       assert.ok(tool.description.length > 20);
@@ -41,6 +41,46 @@ test('MCP initializes and lists tools without DISPLAY, browser, cookies or nativ
     await client.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('MCP exposes bounded smart searches and reusable benchmark tools without a Facebook session', { timeout: 15000 }, async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-mcp-benchmark-'));
+  const now = new Date().toISOString();
+  const listings = Object.fromEntries([1, 2, 3, 4, 5].map(id => [String(id), { listing: {
+    id: String(id), title: 'Sony WH-1000XM5', price: `CHF ${id * 100}`, location: 'Morges', imageUrl: '',
+    sellerName: 'Seller', sellerId: String(id), postedDate: '', url: `https://www.facebook.com/marketplace/item/${id}/`, isPending: false,
+  }, history: [], firstSeen: now, lastSeen: now }]));
+  fs.writeFileSync(path.join(directory, 'tracking.json'), JSON.stringify({ version: 1, monitors: [], listings, watches: [], alerts: [], monitorRotation: 0 }));
+  const transport = new StdioClientTransport({ command: process.execPath,
+    args: [fileURLToPath(new URL('../dist/index.js', import.meta.url))],
+    env: { PATH: process.env.PATH ?? '', FB_DATA_DIR: directory, FB_COOKIES_FILE: path.join(directory, 'missing.json') }, stderr: 'pipe' });
+  const client = new Client({ name: 'deals-smoke-test', version: '1.0.0' });
+  try {
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    assert.ok(client.getInstructions().length <= 512);
+    assert.equal(tools.find(t => t.name === 'smart_search').inputSchema.properties.request_budget.maximum, 3);
+    assert.equal(tools.find(t => t.name === 'smart_search').annotations.openWorldHint, true);
+    for (const name of ['get_price_benchmark', 'list_price_benchmarks']) {
+      assert.equal(tools.find(t => t.name === name).annotations.readOnlyHint, true);
+      assert.equal(tools.find(t => t.name === name).annotations.openWorldHint, false);
+    }
+    const search = await client.callTool({ name: 'smart_search', arguments: { query: 'casque Sony', latitude: 46.5, longitude: 6.5, request_budget: 0 } });
+    assert.equal(search.isError, undefined); assert.equal(search.structuredContent.requestsUsed, 0);
+    const saved = await client.callTool({ name: 'save_price_benchmark', arguments: { name: 'Sony reference',
+      criteria: { product: 'Sony WH-1000XM5', variant: 'standard', condition: 'used working', accessories: ['case'], market_area: 'Vaud, Switzerland', currency: 'CHF' },
+      comparables: [1, 2, 3, 4, 5].map(id => ({ listing_id: String(id), match_notes: 'Same model, configuration, condition, case and market.' })) } });
+    assert.equal(saved.isError, undefined); assert.equal(saved.structuredContent.report.statistics.median, 300);
+    const listed = await client.callTool({ name: 'list_price_benchmarks', arguments: {} });
+    assert.equal(listed.structuredContent.benchmarks[0].selectedCount, 5);
+    const report = await client.callTool({ name: 'get_price_benchmark', arguments: { name: 'Sony reference', candidate_listing_id: '1' } });
+    assert.equal(report.isError, undefined); assert.equal(report.structuredContent.count, 4); assert.equal(report.structuredContent.statistics.median, 350);
+    assert.equal(report.structuredContent.calculationStatus, 'complete');
+    assert.deepEqual(report.structuredContent.omittedByRequest, ['1']);
+    const removed = await client.callTool({ name: 'delete_price_benchmark', arguments: { name: 'Sony reference' } });
+    assert.equal(removed.structuredContent.deleted, true);
+    assert.equal((await client.callTool({ name: 'list_price_benchmarks', arguments: {} })).structuredContent.benchmarks.length, 0);
+  } finally { await client.close(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('MCP transmits real image blocks through stdio and advertises the visual inspection workflow', { timeout: 15000 }, async () => {

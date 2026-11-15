@@ -5,6 +5,7 @@ import lockfile from "proper-lockfile";
 import { dataDirectory } from "../config.js";
 import { writePrivateJson } from "../utils/private-file.js";
 import type { MarketplaceListing, SavedMonitor } from "../facebook/types.js";
+import { benchmarkDefinitionSchema, type PriceBenchmark } from "../analysis/benchmarks.js";
 
 export interface PricePoint { at: string; amount: number; currency: string; formatted: string }
 export interface PhotoFingerprint {
@@ -26,6 +27,7 @@ export interface Alert {
 export interface State {
   version: 1; monitors: SavedMonitor[]; listings: Record<string, ListingRecord>; watches: Watch[];
   alerts: Alert[]; monitorRotation: number;
+  benchmarks?: PriceBenchmark[];
 }
 const empty = (): State => ({ version: 1, monitors: [], listings: {}, watches: [], alerts: [], monitorRotation: 0 });
 export class BusyError extends Error {}
@@ -70,7 +72,8 @@ export function readState(): State {
       || Object.entries(state.listings).some(([id, record]) => !/^\d+$/.test(id) || !record || typeof record !== "object" || !Array.isArray((record as ListingRecord).history))
       || state.watches.some((w: Watch) => !w || !/^\d+$/.test(w.listingId) || typeof w.targetPrice !== "number" || typeof w.currency !== "string")
       || state.alerts.some((a: Alert) => !a || typeof a.id !== "string" || typeof a.message !== "string")) throw new Error("Invalid stored record");
-    return { ...state, monitorRotation: state.monitorRotation ?? 0 };
+    const benchmarks = benchmarkDefinitionSchema.array().max(50).parse(state.benchmarks ?? []);
+    return { ...state, monitorRotation: state.monitorRotation ?? 0, benchmarks };
   } catch {
     throw new Error("Cannot read tracking.json. Restore a valid backup; existing data has not been reset.");
   }
@@ -80,8 +83,9 @@ export async function updateState<T>(task: (state: State) => T): Promise<T> {
   return withLock("tracking", () => {
     const state = readState();
     const result = task(state);
-    // Keep bounded history; protected watches are never evicted from the local catalogue.
+    // Keep bounded history; watched offers and saved benchmark references are protected from eviction.
     const protectedIds = new Set(state.watches.map(w => w.listingId));
+    for (const benchmark of state.benchmarks ?? []) for (const comparable of benchmark.comparables) protectedIds.add(comparable.listingId);
     const entries = Object.entries(state.listings).sort((a, b) => b[1].lastSeen.localeCompare(a[1].lastSeen));
     state.listings = Object.fromEntries(entries.filter(([id], index) => index < 10000 || protectedIds.has(id)));
     state.alerts = state.alerts.slice(-5000);
