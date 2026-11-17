@@ -192,6 +192,14 @@ If Facebook still returns the values shown in the supplied screenshot, expect cu
 
 Reconnect the MCP in your AI client after rebuilding. Ask it to call `get_listing` for the same ID and report both displayed prices, the reduction, the posting date, and any missing fields. It should not invent a reduction date. Offline regression checks: `npm test` and `npm run typecheck`.
 
+If the old price is visible on Facebook but `previousPrice` is `null`, use the opt-in diagnostic added in 1.3.1:
+
+```bash
+npm run listing:check -- 1398293835801835 --diagnostics
+```
+
+This uses the same authenticated, rate-limited listing-page fetch once, with no browser, automatic retries, searches or monitoring. It prints sanitized price fields from matching listing fragments, whether fields occur elsewhere in the response, and whether relevant data appears wrapped inside JSON strings. The latter two signals are diagnostic only: they may describe other listings or code and never supply a price for this offer. It prints no cookies, headers, full HTML, descriptions or seller information, and saves no raw page dump. Diagnostic mode does not write observed price history or seen IDs. Paste its JSON output to investigate the actual response shape before changing extraction. Version 1.3.1 adds diagnostics; it does not claim to fix the reported missing old price without that evidence.
+
 ### Inspect listing photos
 
 `get_listing` returns numbered photo URLs. `get_listing_images` fetches the listing's current photo URLs and returns the image bytes in MCP `image` content blocks, with labels linking each image to its listing and photo number. The image bytes are not placed in text, `structuredContent`, or UI-only metadata.

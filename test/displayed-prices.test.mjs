@@ -166,7 +166,7 @@ test('CLI tests the actual stdio MCP with a saved login and prints just the sele
   });
   assert.equal(run.status, 0, run.stderr);
   const output = JSON.parse(run.stdout);
-  assert.equal(output.serverVersion, '1.3.0');
+  assert.equal(output.serverVersion, JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
   assert.equal(output.currentPrice.amount, 500);
   assert.equal(output.previousPrice.amount, 750);
   assert.equal(output.priceReduction.percent, 33.33);

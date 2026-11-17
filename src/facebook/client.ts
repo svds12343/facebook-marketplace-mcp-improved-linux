@@ -17,6 +17,7 @@ import {
   buildLocationSearchVariables,
 } from "./queries.js";
 import { parseSearchResponse, parseListingDetailFromPage } from "./parser.js";
+import { inspectListingPriceData } from "./price-diagnostics.js";
 import { suspendAutomation } from "../monitoring/control.js";
 import { RateLimiter } from "../utils/rate-limit.js";
 import { queryDocId } from "./query-config.js";
@@ -252,7 +253,16 @@ export class FacebookClient {
       return data as MarketplaceListingDetail;
     }
 
-    // Fallback: fetch the listing page directly and parse embedded data
+    return parseListingDetailFromPage(await this.fetchListingPage(listingId), listingId);
+  }
+
+  async diagnoseListingPrice(listingId: string) {
+    const html = await this.fetchListingPage(listingId);
+    return { listing: parseListingDetailFromPage(html, listingId), diagnostics: inspectListingPriceData(html, listingId) };
+  }
+
+  private async fetchListingPage(listingId: string): Promise<string> {
+    if (!/^\d+$/.test(listingId)) throw new Error("A numeric Marketplace listing ID is required.");
     const session = await this.ensureSession();
     await this.rateLimiter.wait();
 
@@ -284,7 +294,7 @@ export class FacebookClient {
       await suspendAutomation("Facebook returned a login, checkpoint or temporary-block page.");
       throw new Error("Facebook requires manual login/checkpoint review. Background checks were paused.");
     }
-    return parseListingDetailFromPage(html, listingId);
+    return html;
   }
 
   async searchLocation(
