@@ -38,6 +38,23 @@ test('diagnostics inspect ID-linked fragments and nested price objects that norm
   assert.equal(report.matchingFragments[3].fields[0].field, 'details.extra_price');
 });
 
+test('diagnostics show the detail-page price alias and distinguish filtered fields from empty objects', () => {
+  const page = html({ id: '123', listing_price: money(150),
+    strikethrough_price: { formattedAmountWithoutDecimals: '300\u00a0CHF' },
+    other_price: { unknownMoneyField: 'private unknown value', access_token: 'private token' },
+    empty_price: {},
+  });
+  const fields = inspectListingPriceData(page, '123').matchingFragments[0].fields;
+  const previous = fields.find(field => field.field === 'strikethrough_price');
+  assert.deepEqual(previous.keys, ['formattedAmountWithoutDecimals']);
+  assert.deepEqual(previous.value, { formattedAmountWithoutDecimals: '300\u00a0CHF' });
+  const unknown = fields.find(field => field.field === 'other_price');
+  assert.deepEqual(unknown.keys, ['unknownMoneyField']);
+  assert.deepEqual(unknown.value, {});
+  assert.deepEqual(fields.find(field => field.field === 'empty_price').keys, []);
+  assert.doesNotMatch(JSON.stringify(fields), /private unknown value|access_token|private token/);
+});
+
 test('diagnostics omit arbitrary text, credentials and unrelated personal data', () => {
   const page = html({ id: '123', listing_price: { ...money(150), cookie: 'private-cookie', access_token: 'private-access-token' },
     redacted_description: { text: 'private description' }, seller: { id: '777', name: 'private seller', address: 'private address' },
@@ -86,4 +103,36 @@ test('CLI diagnostics use one page fetch, preserve null results, and do not save
   assert.equal(report.diagnostics.matchingFragments[0].fields.find(field => field.field === 'comparable_price').value.amount, '300');
   assert.doesNotMatch(run.stdout + run.stderr, /private-fixture-auth-token|private-cookie|private fixture description|private fixture seller/);
   assert.equal(fs.existsSync(path.join(directory, 'tracking.json')), false);
+});
+
+test('CLI and stdio MCP return CHF 300 to CHF 150 from the detail-page alias without extra page requests', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-price-alias-cli-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const cookies = path.join(directory, 'session.json');
+  fs.writeFileSync(cookies, JSON.stringify({ cookies: ['c_user', 'xs'].map(name => ({
+    domain: '.facebook.com', name, value: `private-cookie-${name}`, path: '/', expires: -1,
+  })) }));
+  const fixture = fileURLToPath(new URL('./fixtures/price-diagnostics-network.mjs', import.meta.url));
+  const script = fileURLToPath(new URL('../scripts/check-listing.mjs', import.meta.url));
+  const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  for (const flags of [['--diagnostics'], []]) {
+    const run = spawnSync(process.execPath, [script, '1398293835801835', ...flags], {
+      env: { ...process.env, FB_DATA_DIR: directory, FB_COOKIES_FILE: cookies, DISPLAY: '', NODE_OPTIONS: `--import=${fixture}` },
+      encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.serverVersion ?? report.packageVersion, version);
+    assert.equal(report.currentPrice.amount, 150);
+    assert.deepEqual(report.previousPrice, {
+      formatted: '300\u00a0CHF', source: 'facebook_strikethrough', amount: 300, currency: 'CHF',
+    });
+    assert.deepEqual(report.priceReduction, { amount: 150, currency: 'CHF', percent: 50 });
+    if (flags.length) {
+      assert.deepEqual(report.diagnostics.matchingFragments[0].fields.find(field => field.field === 'strikethrough_price').keys,
+        ['formattedAmountWithoutDecimals']);
+      assert.equal(fs.existsSync(path.join(directory, 'tracking.json')), false);
+    }
+    assert.doesNotMatch(run.stdout + run.stderr, /private-fixture-auth-token|private-cookie/);
+  }
 });

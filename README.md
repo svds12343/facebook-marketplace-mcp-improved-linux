@@ -168,7 +168,7 @@ These are **observed asking prices**, not verified sales. `calculationStatus: co
 
 ### Check displayed previous prices and posting dates
 
-The search and detail parsers read `strikethrough_price` only from the requested listing's data. Results include:
+The search and detail parsers read `strikethrough_price` only from the requested listing's data. Version 1.3.2 also recognizes the detail-page `formattedAmountWithoutDecimals` field inside that object, alongside the existing snake_case money fields. Results include:
 
 - `previousPrice`: `{ formatted, amount?, currency?, source: "facebook_strikethrough" }`, or `null` if unavailable. Old cached results may omit this field.
 - `priceReduction`: `{ amount, currency, percent }`, calculated only for a lower current price with valid amounts in the same known currency. Otherwise `null`. Amount and percent are rounded to two decimal places.
@@ -198,7 +198,7 @@ If the old price is visible on Facebook but `previousPrice` is `null`, use the o
 npm run listing:check -- 1398293835801835 --diagnostics
 ```
 
-This uses the same authenticated, rate-limited listing-page fetch once, with no browser, automatic retries, searches or monitoring. It prints sanitized price fields from matching listing fragments, whether fields occur elsewhere in the response, and whether relevant data appears wrapped inside JSON strings. The latter two signals are diagnostic only: they may describe other listings or code and never supply a price for this offer. It prints no cookies, headers, full HTML, descriptions or seller information, and saves no raw page dump. Diagnostic mode does not write observed price history or seen IDs. Paste its JSON output to investigate the actual response shape before changing extraction. Version 1.3.1 adds diagnostics; it does not claim to fix the reported missing old price without that evidence.
+This uses the same authenticated, rate-limited listing-page fetch once, with no browser, automatic retries, searches or monitoring. It prints sanitized price fields from matching listing fragments, whether fields occur elsewhere in the response, and whether relevant data appears wrapped inside JSON strings. The latter two signals are diagnostic only: they may describe other listings or code and never supply a price for this offer. It prints no cookies, headers, full HTML, descriptions or seller information, and saves no raw page dump. Diagnostic mode does not write observed price history or seen IDs. From 1.3.2, price objects include a `keys` list of safe field names, even when their values are omitted: a sanitized `{}` does not prove that the source object was empty. Paste its JSON output if the previous price is still unavailable.
 
 ### Inspect listing photos
 

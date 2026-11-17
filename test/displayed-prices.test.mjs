@@ -45,6 +45,24 @@ test('search and details return the displayed price pair, arithmetic and posting
   }
 });
 
+test('the detail-page formattedAmountWithoutDecimals alias supplies the crossed-out CHF price', () => {
+  const node = raw({
+    listing_price: { amount: '150.00', currency: 'CHF', formatted_amount_zeros_stripped: '150\u00a0CHF',
+      amount_with_offset_in_currency: '17797' },
+    strikethrough_price: { formattedAmountWithoutDecimals: '300\u00a0CHF' },
+  });
+  for (const listing of [detail(node), search(node).listings[0]]) {
+    assert.deepEqual(listing.previousPrice, { ...previous, formatted: '300\u00a0CHF' });
+    assert.deepEqual(listing.priceReduction, reduction);
+    assert.equal(listing.priceAmount, 150); // The currency-offset value is not the CHF amount.
+  }
+  for (const formatted of ['$300', '300 EUR']) {
+    const listing = detail(raw({ strikethrough_price: { formattedAmountWithoutDecimals: formatted } }));
+    assert.equal(listing.previousPrice.formatted, formatted);
+    assert.equal(listing.priceReduction, null);
+  }
+});
+
 test('price-only and date-only fragments resolve through the matching public item ID', () => {
   const listing = parseListingDetailFromPage(html(
     raw({ id: '999', strikethrough_price: money(9999) }),

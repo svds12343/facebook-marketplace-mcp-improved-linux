@@ -28,8 +28,10 @@ function textValue(value: unknown): string {
 }
 
 function formattedPrice(price: JsonRecord | undefined): string {
+  // Detail pages can alias the crossed-out amount to this camelCase field.
   return textValue(price?.formatted_amount_zeros_stripped) ||
-    textValue(price?.formatted_amount) || textValue(price?.amount);
+    textValue(price?.formatted_amount) || textValue(price?.formattedAmountWithoutDecimals) ||
+    textValue(price?.amount);
 }
 
 function postedDate(timestamp: unknown): string {

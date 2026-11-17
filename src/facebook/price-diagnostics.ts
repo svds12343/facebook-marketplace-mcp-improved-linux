@@ -6,7 +6,7 @@ const priceKey = /price|pricing|discount|markdown|strikethrough/i;
 const privateKey = /token|cookie|secret|password|session|authorization|email|phone|address/i;
 const safeKey = (key: string) => /^[a-z_][a-z0-9_:-]{0,79}$/i.test(key) && !privateKey.test(key);
 const moneyKeys = new Set(["amount", "amount_with_offset_in_currency", "formatted_amount", "formatted_amount_zeros_stripped",
-  "currency", "currency_code", "value", "text", "label", "type"]);
+  "formattedAmountWithoutDecimals", "currency", "currency_code", "value", "text", "label", "type"]);
 const numericText = /^-?\d+(?:\.\d+)?$/;
 const priceText = /^\s*(?:(?:[A-Z]{3}|S?Fr\.|[$€£¥₹])\s*)?-?\d[\d\s.,'’]*(?:[–—-])?\s*(?:[A-Z]{3}|S?Fr\.|[$€£¥₹])?\s*$/u;
 
@@ -59,7 +59,7 @@ export function inspectListingPriceData(html: string, listingId: string) {
   }
   const matches = records.filter(node => (typeof node.id === "string" || typeof node.id === "number") && listingIds.has(String(node.id)));
   const matchingFragments = matches.slice(0, 20).map((node, index) => {
-    const fields: Array<{ field: string; kind: string; value: unknown }> = [];
+    const fields: Array<{ field: string; kind: string; keys?: string[]; value: unknown }> = [];
     const queue: Array<{ node: unknown; path: string; depth: number }> = [{ node, path: "", depth: 0 }];
     for (let i = 0; i < queue.length && i < 500 && fields.length < 30; i++) {
       const current = queue[i];
@@ -75,7 +75,12 @@ export function inspectListingPriceData(html: string, listingId: string) {
         if (!safeKey(key)) continue;
         const field = current.path ? `${current.path}.${key}` : key;
         if (priceKey.test(key)) {
-          fields.push({ field, kind: value === null ? "null" : Array.isArray(value) ? "array" : typeof value, value: safeValue(value, key) });
+          // Show safe key names even when their values are not allowlisted. An
+          // empty sanitized value must not imply that Facebook sent an empty object.
+          const keys = record(value) ? Object.keys(value).filter(safeKey) : undefined;
+          if (keys && keys.length > 20) truncated = true;
+          fields.push({ field, kind: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+            ...(keys ? { keys: keys.slice(0, 20) } : {}), value: safeValue(value, key) });
         } else if (record(value) || Array.isArray(value)) queue.push({ node: value, path: field, depth: current.depth + 1 });
         if (fields.length >= 30) break;
       }
@@ -88,5 +93,5 @@ export function inspectListingPriceData(html: string, listingId: string) {
     rawHtmlMentions: Object.fromEntries(["strikethrough_price", "strikethroughPrice", "comparable_price", "previous_price", "original_price"]
       .map(key => [key, html.includes(key)])),
     truncated: truncated || matches.length > 20,
-    note: "Only allowlisted price values from matching listing fragments are shown. Page-wide field names/mentions may refer to other offers or code, not this listing. Other strings and unrelated values are omitted. No reduction is inferred from comparison prices." };
+    note: "Only allowlisted price values from matching listing fragments are shown. Object keys list safe field names, including fields whose values are omitted. An empty sanitized value does not necessarily mean an empty source object. Page-wide field names/mentions may refer to other offers or code, not this listing. Other strings and unrelated values are omitted. No reduction is inferred from comparison prices." };
 }
