@@ -33,6 +33,15 @@ export interface MarketplaceListing {
   priceAmount?: number;
   currency?: string;
   sellerId?: string;
+  /** Facebook's displayed crossed-out asking price, not a historical observation. */
+  previousPrice?: {
+    formatted: string;
+    amount?: number;
+    currency?: string;
+    source: "facebook_strikethrough";
+  } | null;
+  /** Arithmetic only, when both displayed amounts have the same known currency. */
+  priceReduction?: { amount: number; currency: string; percent: number } | null;
 }
 
 export interface MarketplaceListingDetail extends MarketplaceListing {

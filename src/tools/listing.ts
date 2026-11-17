@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { FacebookClient } from "../facebook/client.js";
 import { updateState } from "../storage/state.js";
 import { observeListing, priceSignals } from "../analysis/prices.js";
+import { listingContext } from "./listing-context.js";
 
 export const getListingSchema = {
   listing_id: z.string().regex(/^\d+$/).describe("Numeric Facebook Marketplace listing ID"),
@@ -19,6 +20,7 @@ export function createListingHandler(client: FacebookClient) {
         `# ${listing.title}`,
         "",
         `**Price:** ${listing.price}`,
+        ...listingContext(listing, true),
         listing.condition ? `**Condition:** ${listing.condition}` : null,
         `**Location:** ${listing.location}`,
         listing.isPending ? "**Status:** ⏳ Pending" : null,

@@ -115,6 +115,10 @@ test('MCP transmits real image blocks through stdio and advertises the visual in
     const detail = await client.callTool({ name: 'get_listing', arguments: { listing_id: '123' } });
     assert.equal(detail.isError, undefined);
     assert.equal(detail.structuredContent.listing.price, 'CHF 500');
+    assert.equal(detail.structuredContent.listing.previousPrice.amount, 750);
+    assert.equal(detail.structuredContent.listing.priceReduction.percent, 33.33);
+    assert.match(detail.content[0].text, /Previous displayed price/);
+    assert.match(detail.content[0].text, /2026-10-13T12:00:00.000Z/);
     const watch = await client.callTool({ name: 'watch_listing', arguments: { listing_id: '123', target_price: 600, currency: 'CHF' } });
     assert.equal(watch.isError, undefined);
     const checks = await client.callTool({ name: 'check_monitors', arguments: { request_budget: 1 } });

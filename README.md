@@ -4,6 +4,8 @@ A Marketplace MCP server that reads Facebook and stores tracking data locally, a
 
 This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, actual listing images, bounded multi-page monitoring, a local alert inbox, price history, keyword/age/seen filters, and evidence-based checks for reused photos and inconsistent prices. Version 1.2 adds bounded searches across AI-chosen query variants, a recent-search cache, and reusable price benchmarks from AI-selected comparable offers. The AI makes the research and deal decisions; these new tools retrieve/store data and calculate statistics. Existing MCP tool names remain unchanged. Background requests are disabled by default. [Fork review and attribution](docs/FORK_REVIEW.md).
 
+Version 1.3 also exposes Facebook's displayed crossed-out asking price, the calculated reduction when the currencies match, and posting dates in readable listing/search summaries. These are factual fields; the AI still decides whether an offer is worth pursuing.
+
 ## Requirements
 
 - Ubuntu 22.04 or 24.04 and a normal non-root user. The setup script uses an existing **Node.js 22+** with npm, or installs **Node.js 24** and npm for your user through [nvm](https://github.com/nvm-sh/nvm). Ubuntu's default `nodejs` package may be too old.
@@ -119,7 +121,7 @@ Set up a working SSH key/login for that SSH executable and accept the host key i
 | `smart_search` | Execute prioritized AI-chosen search variants within one shared budget, deduplicate IDs and reuse recent pages. |
 | `save_price_benchmark`, `get_price_benchmark` | Save AI-selected comparables, then calculate local asking-price statistics with source evidence. |
 | `list_price_benchmarks`, `delete_price_benchmark` | Find or remove saved comparison definitions. |
-| `get_listing` | Read the requested listing's title, description, price, condition, photos and seller. |
+| `get_listing` | Read title, description, current and displayed previous price, reduction, posting date, condition, photos and seller. |
 | `get_listing_images` | Return actual listing photos as MCP image content so an image-capable model can inspect them. |
 | `monitor_search` | Save a search locally. |
 | `check_monitors` | Check multiple pages and watched offers within a request budget; record alerts and coverage. |
@@ -163,6 +165,32 @@ Search and listing-detail tools now persist observed prices and seen IDs locally
 For comparisons, the AI selects the exact model/configuration, condition, accessories and geographic market, then saves observed listing IDs and matching notes with `save_price_benchmark`. `get_price_benchmark` calculates mean, median, range and quartiles from precisely that selection, without Facebook requests. It returns dates, links, pending status, repeated seller IDs and changed-detail facts so the AI can evaluate them. `selected_listing_ids` explicitly narrows the sample; `candidate_listing_id` keeps an evaluated offer out of its own baseline. The server does not generate a confidence verdict, deal score or resale recommendation, or automatically remove cheap, expensive, old or repeated-seller offers.
 
 These are **observed asking prices**, not verified sales. `calculationStatus: complete` means the arithmetic completed, not that the sample is reliable. Missing or mixed-currency prices make statistics unavailable for the whole selected set; the AI can revise the selection. Creating a benchmark does not schedule refreshes. Existing image handling is unchanged. [Workflow, parameters and examples](docs/DEAL_RESEARCH.md).
+
+### Check displayed previous prices and posting dates
+
+The search and detail parsers read `strikethrough_price` only from the requested listing's data. Results include:
+
+- `previousPrice`: `{ formatted, amount?, currency?, source: "facebook_strikethrough" }`, or `null` if unavailable. Old cached results may omit this field.
+- `priceReduction`: `{ amount, currency, percent }`, calculated only for a lower current price with valid amounts in the same known currency. Otherwise `null`. Amount and percent are rounded to two decimal places.
+- `postedDate`: Facebook's posting timestamp in ISO format when provided, otherwise an empty string. It is also included in readable summaries, alongside the displayed previous price.
+
+Missing data does not establish that the listing never changed price. A displayed previous asking price is not a valuation, a verified original sale price, or a dated history point. `get_price_history` still records **only current prices actually observed**; it never backfills the crossed-out amount. Neither field establishes when a reduction occurred. Price extraction adds no requests, automatic checks or image processing. Response field examples are documented by [Apify](https://apify.com/apify/facebook-marketplace-scraper/output-schema) and [SocialAPIs](https://socialapis.io/blog/scrape-facebook-marketplace-python); Facebook can omit fields or change its format.
+
+Update and test on Ubuntu:
+
+```bash
+cd ~/facebook-marketplace-mcp-improved-linux
+git pull --ff-only
+npm ci
+npm run build
+npm run listing:check -- 1398293835801835
+```
+
+The last command opens a fresh stdio MCP connection and calls `get_listing` once for the Godin listing. It uses the saved session, may make an authentication request, respects the existing shared rate limit, and prints only the selected listing/price/date fields. It does not start a browser, download photos or enable monitoring. A full `https://www.facebook.com/marketplace/item/.../` URL also works; quote URLs containing query parameters.
+
+If Facebook still returns the values shown in the supplied screenshot, expect current price CHF 150, `previousPrice.amount: 300` and `priceReduction: { amount: 150, currency: "CHF", percent: 50 }`. Posting age should approximately match the Facebook page at the time of testing. Those are expected live values, **not a completed live verification**. If `previousPrice` is `null` despite the page showing an old price, retain the small JSON output for diagnosis; do not share session files, cookies or full page dumps. On a session/checkpoint error, stop and follow the error's login instructions.
+
+Reconnect the MCP in your AI client after rebuilding. Ask it to call `get_listing` for the same ID and report both displayed prices, the reduction, the posting date, and any missing fields. It should not invent a reduction date. Offline regression checks: `npm test` and `npm run typecheck`.
 
 ### Inspect listing photos
 

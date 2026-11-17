@@ -5,6 +5,7 @@ import type { ListingFilters } from "../facebook/types.js";
 import { filterSchema, filterListings } from "../analysis/filters.js";
 import { updateState } from "../storage/state.js";
 import { observeListing, priceSignals } from "../analysis/prices.js";
+import { listingContext } from "./listing-context.js";
 
 export const searchOptionsSchema = {
   sort_by: z.enum(["suggested", "distance", "date_listed", "price_low_to_high", "price_high_to_low"]).optional()
@@ -109,7 +110,7 @@ export function createSearchHandler(client: FacebookClient) {
       const summary = filtered.listings
         .map(
           (l, i) =>
-            `${i + 1}. **${l.title}** — ${l.price}\n   📍 ${l.location} | 👤 ${l.sellerName}${l.isPending ? " ⏳ PENDING" : ""}\n   🔗 ${l.url}`
+            `${i + 1}. **${l.title}** — ${l.price}\n${listingContext(l).map(line => `   ${line}\n`).join("")}   📍 ${l.location} | 👤 ${l.sellerName}${l.isPending ? " ⏳ PENDING" : ""}\n   🔗 ${l.url}`
         )
         .join("\n\n");
 

@@ -54,7 +54,8 @@ export function priceSignals(listing: MarketplaceListing, description = ""): Sig
 export function observeListing(state: State, listing: MarketplaceListing, now: string, description?: string, markSeen = false): ListingRecord {
   const old = state.listings[listing.id];
   const record: ListingRecord = old ?? { listing, firstSeen: now, lastSeen: now, history: [] };
-  record.listing = { ...record.listing, ...listing, priceAmount: listing.priceAmount, currency: listing.currency };
+  record.listing = { ...record.listing, ...listing, priceAmount: listing.priceAmount, currency: listing.currency,
+    previousPrice: listing.previousPrice ?? null, priceReduction: listing.priceReduction ?? null };
   record.lastSeen = now;
   if (description !== undefined) record.description = description;
   if (markSeen) record.seenAt = now;

@@ -5,6 +5,7 @@ import type {
   MarketplaceListingDetail,
   SearchResult,
 } from "./types.js";
+import { parseMoney } from "../analysis/prices.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -24,6 +25,59 @@ function textValue(value: unknown): string {
     return String(value);
   if (isRecord(value) && typeof value.text === "string") return value.text;
   return "";
+}
+
+function formattedPrice(price: JsonRecord | undefined): string {
+  return textValue(price?.formatted_amount_zeros_stripped) ||
+    textValue(price?.formatted_amount) || textValue(price?.amount);
+}
+
+function postedDate(timestamp: unknown): string {
+  const seconds = typeof timestamp === "number" ? timestamp
+    : typeof timestamp === "string" && timestamp.trim() !== "" ? Number(timestamp) : NaN;
+  const date = new Date(seconds * 1000);
+  return seconds > 0 && Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function displayedPricing(listing: JsonRecord, price: JsonRecord | undefined):
+  Pick<MarketplaceListing, "previousPrice" | "priceReduction"> {
+  const raw = isRecord(listing.strikethrough_price) ? listing.strikethrough_price : undefined;
+  const formatted = formattedPrice(raw);
+  if (!raw || !formatted) return { previousPrice: null, priceReduction: null };
+
+  const currentNumeric = numericPrice(price);
+  const currentText = parseMoney(formattedPrice(price));
+  const current = currentNumeric.priceAmount !== undefined && currentNumeric.currency
+    ? { amount: currentNumeric.priceAmount, currency: currentNumeric.currency } : currentText;
+  const rawAmount = typeof raw.amount === "number" ? raw.amount
+    : typeof raw.amount === "string" && /^\d+(?:\.\d+)?$/.test(raw.amount.trim()) ? Number(raw.amount) : NaN;
+  const explicitCurrency = typeof raw.currency === "string" && /^[A-Z]{3}$/i.test(raw.currency)
+    ? raw.currency.toUpperCase() : undefined;
+  const fromText = parseMoney(formatted);
+  // Currency-free amounts inherit the listing currency. Ambiguous symbols such
+  // as "$" do not silently become CHF. Explicit currencies always take priority.
+  const currency = explicitCurrency ?? fromText?.currency ??
+    (/^[\d\s'’.,–—-]+$/.test(formatted) && raw.currency == null ? current?.currency : undefined);
+  const amount = raw.amount == null ? parseMoney(formatted, currency)?.amount
+    : Number.isFinite(rawAmount) && rawAmount >= 0 && rawAmount <= 1e12 ? rawAmount : undefined;
+  const inconsistent = (raw.currency != null && !explicitCurrency) ||
+    (fromText && ((currency && currency !== fromText.currency) || (amount !== undefined && amount !== fromText.amount)));
+  const previousPrice: NonNullable<MarketplaceListing["previousPrice"]> = {
+    formatted, source: "facebook_strikethrough",
+    ...(!inconsistent && amount !== undefined ? { amount } : {}),
+    ...(!inconsistent && currency ? { currency } : {}),
+  };
+  const currentInconsistent = current && currentText &&
+    (current.amount !== currentText.amount || current.currency !== currentText.currency);
+  let priceReduction: MarketplaceListing["priceReduction"] = null;
+  if (!currentInconsistent && current && previousPrice.amount !== undefined && previousPrice.currency === current.currency &&
+    previousPrice.amount > current.amount && current.amount >= 0) {
+    const difference = previousPrice.amount - current.amount;
+    const amount = Math.round(difference * 100) / 100;
+    if (amount > 0) priceReduction = { amount, currency: current.currency,
+      percent: Math.round(difference / previousPrice.amount * 10000) / 100 };
+  }
+  return { previousPrice, priceReduction };
 }
 
 function findListingConnection(root: unknown): JsonRecord | null {
@@ -119,18 +173,10 @@ function parseSearchListing(edge: unknown): MarketplaceListing | null {
   const seller = isRecord(listing.marketplace_listing_seller)
     ? listing.marketplace_listing_seller
     : {};
-  const timestamp = listing.creation_time;
-  const seconds =
-    typeof timestamp === "number"
-      ? timestamp
-      : typeof timestamp === "string" && timestamp.trim() !== ""
-        ? Number(timestamp)
-        : NaN;
-  const date = new Date(seconds * 1000);
-
   return {
     id,
     ...numericPrice(price),
+    ...displayedPricing(listing, price),
     ...(textValue(seller.id) ? { sellerId: textValue(seller.id) } : {}),
     title: textValue(listing.marketplace_listing_title),
     price:
@@ -139,7 +185,7 @@ function parseSearchListing(edge: unknown): MarketplaceListing | null {
       textValue(cityPage.display_name) || textValue(geocode.city) || "Unknown",
     imageUrl: textValue(image.uri),
     sellerName: textValue(seller.name) || "Unknown",
-    postedDate: Number.isFinite(date.getTime()) ? date.toISOString() : "",
+    postedDate: postedDate(listing.creation_time),
     url: `https://www.facebook.com/marketplace/item/${id}/`,
     isPending: listing.is_pending === true,
   };
@@ -149,6 +195,8 @@ function isListingNode(value: JsonRecord): boolean {
   return (
     typeof value.marketplace_listing_title === "string" ||
     isRecord(value.listing_price) ||
+    isRecord(value.strikethrough_price) ||
+    Object.hasOwn(value, "creation_time") ||
     isRecord(value.redacted_description) ||
     isRecord(value.marketplace_listing_seller) ||
     Array.isArray(value.listing_photos)
@@ -246,6 +294,8 @@ export function parseListingDetailFromPage(
     url: `https://www.facebook.com/marketplace/item/${listingId}/`,
     isPending: false,
     condition: "",
+    previousPrice: null,
+    priceReduction: null,
     seller: { name: "", profileUrl: "" },
   };
 
@@ -262,6 +312,7 @@ export function parseListingDetailFromPage(
       textValue(price?.formatted_amount) ||
       textValue(price?.amount);
     Object.assign(detail, numericPrice(price));
+    Object.assign(detail, displayedPricing(listing, price));
     const location = isRecord(listing.location) ? listing.location : undefined;
     const reverseGeocode = isRecord(location?.reverse_geocode)
       ? location.reverse_geocode
@@ -303,8 +354,7 @@ export function parseListingDetailFromPage(
       if (isRecord(condition)) detail.condition = textValue(condition.label);
     }
     detail.isPending = listing.is_pending === true;
-    const created = new Date(Number(listing.creation_time) * 1000);
-    if (listing.creation_time != null && Number.isFinite(created.getTime())) detail.postedDate = created.toISOString();
+    detail.postedDate = postedDate(listing.creation_time);
     const primaryPhoto = isRecord(listing.primary_listing_photo)
       ? listing.primary_listing_photo
       : undefined;

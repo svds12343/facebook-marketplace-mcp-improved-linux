@@ -3,6 +3,9 @@ export const listingContract = z.object({
   id: z.string(), title: z.string(), price: z.string(), location: z.string(), imageUrl: z.string(),
   sellerName: z.string(), postedDate: z.string(), url: z.string(), isPending: z.boolean(),
   priceAmount: z.number().optional(), currency: z.string().optional(), sellerId: z.string().optional(),
+  previousPrice: z.object({ formatted: z.string(), amount: z.number().nonnegative().optional(),
+    currency: z.string().optional(), source: z.literal("facebook_strikethrough") }).nullable().optional(),
+  priceReduction: z.object({ amount: z.number().positive(), currency: z.string(), percent: z.number().min(0).max(100) }).nullable().optional(),
 });
 export const detailContract = listingContract.extend({ description: z.string(), images: z.array(z.string()), condition: z.string(),
   seller: z.object({ name: z.string(), profileUrl: z.string() }) });
