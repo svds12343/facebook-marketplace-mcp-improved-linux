@@ -114,7 +114,8 @@ export function createSearchHandler(client: FacebookClient) {
         )
         .join("\n\n");
 
-      const text = `Found ${filtered.listings.length} listings on this page for "${args.query}":\n\n${summary}${continuation}`;
+      const retrieval = result.retrieval ? `\nRetrieved ${result.retrieval.observedAt} (${result.retrieval.source}); not proof of current availability.` : "";
+      const text = `Found ${filtered.listings.length} listings on this page for "${args.query}":${retrieval}\n\n${summary}${continuation}`;
 
       return {
         content: [{ type: "text" as const, text }],

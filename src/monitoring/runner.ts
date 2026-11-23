@@ -79,6 +79,7 @@ async function checkSearch(client: Client, monitor: SavedMonitor, budget: { rema
     for (const listing of collected.values()) {
       const inspected = details.get(listing.id);
       const record = observeListing(state, listing, now, inspected?.listing.description);
+      collected.set(listing.id, record.listing);
       if (inspected) { record.photos = inspected.photos; record.photosCheckedAt = now; report.errors.push(...inspected.errors); }
     }
     // Re-evaluate after details arrive so excluded phrases in fetched descriptions are respected.
@@ -134,8 +135,8 @@ export async function runChecks(client: Client, options: { monitorName?: string;
         await updateState(state => {
           const current = state.watches.find(w => w.listingId === watch.listingId && w.createdAt === watch.createdAt);
           if (!current) return;
-          observeListing(state, listing, now, listing.description);
-          current.lastPrice = recordPriceAlerts(state, `watch:${listing.id}`, listing, current.lastPrice,
+          const record = observeListing(state, listing, now, listing.description);
+          current.lastPrice = recordPriceAlerts(state, `watch:${listing.id}`, record.listing, current.lastPrice,
             { amount: current.targetPrice, currency: current.currency }, now);
           current.lastChecked = now;
           const signals = priceSignals(listing, listing.description);
@@ -154,7 +155,7 @@ export async function runChecks(client: Client, options: { monitorName?: string;
               source: `watch:${watch.listingId}`, listingId: watch.listingId, message }, now);
           }
         });
-        if (/paused|disabled|daily request cap|login|checkpoint|429|session/i.test(message)) { stopped = true; break; }
+        if (/paused|disabled|daily request cap|request budget|spacing limit|login|checkpoint|429|session/i.test(message)) { stopped = true; break; }
       }
     }
     const saved = initial.monitors;
@@ -165,12 +166,12 @@ export async function runChecks(client: Client, options: { monitorName?: string;
     for (const monitor of monitors) {
       if (stopped || budget.remaining <= 0) break;
       reports.push(await checkSearch(client, monitor, budget));
-      if (reports.at(-1)!.errors.some(e => /paused|disabled|daily request cap|login|checkpoint|429|session/i.test(e))) break;
+      if (reports.at(-1)!.errors.some(e => /paused|disabled|daily request cap|request budget|spacing limit|login|checkpoint|429|session/i.test(e))) break;
     }
     if (!options.monitorName) await updateState(state => { state.monitorRotation = rotation + Math.max(reports.length, 1); });
     return { monitors: reports, watched, requestsUsed: totalBudget - budget.remaining,
       monitorsDeferred: monitors.length - reports.length, watchesDeferred: watches.length - watched.length,
       unreadAlerts: readState().alerts.filter(a => !a.readAt).length,
-      note: "Alerts are stored locally; use read_alerts. A bounded scan is not exhaustive. Watch specific listing IDs to recheck prices after they disappear from search pages." };
+      note: "Alerts are stored locally; use read_alerts. A bounded scan is not exhaustive. Search/details can reuse observations up to 30 minutes old. requestsUsed counts requested operations, not HTTP traffic; activity_status has HTTP counts. Shared pauses and limits also apply to manual checks." };
   }, 0);
 }

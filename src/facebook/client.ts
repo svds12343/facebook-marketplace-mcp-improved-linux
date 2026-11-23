@@ -1,325 +1,148 @@
-import type {
-  FacebookSession,
-  SearchParams,
-  SearchResult,
-  MarketplaceListingDetail,
-} from "./types.js";
-import {
-  loadFacebookAuth,
-  cookiesToHeader,
-  getCookieValue,
-} from "./auth.js";
-import {
-  MARKETPLACE_SEARCH_DOC_ID,
-  LOCATION_SEARCH_DOC_ID,
-  LISTING_DETAIL_DOC_ID,
-  buildSearchVariables,
-  buildLocationSearchVariables,
-} from "./queries.js";
+import crypto from "node:crypto";
+import { z } from "zod";
+import type { FacebookSession, SearchParams, SearchResult, MarketplaceListingDetail } from "./types.js";
+import { loadFacebookAuth, cookiesToHeader, getCookieValue } from "./auth.js";
+import { MARKETPLACE_SEARCH_DOC_ID, LOCATION_SEARCH_DOC_ID, LISTING_DETAIL_DOC_ID, buildSearchVariables, buildLocationSearchVariables } from "./queries.js";
 import { parseSearchResponse, parseListingDetailFromPage } from "./parser.js";
 import { inspectListingPriceData } from "./price-diagnostics.js";
-import { suspendAutomation } from "../monitoring/control.js";
 import { RateLimiter } from "../utils/rate-limit.js";
 import { queryDocId } from "./query-config.js";
+import { runGuardedRequest, SecurityStopError, assertActivityOpen } from "../activity/control.js";
+import { checkResponsePage, checkResponseStatus } from "./response-guard.js";
+import { cachedResponse } from "../storage/response-cache.js";
+import { detailContract, listingContract } from "../tools/contracts.js";
 
 const GRAPHQL_URL = "https://www.facebook.com/api/graphql/";
 const MARKETPLACE_URL = "https://www.facebook.com/marketplace/";
-
 const PLATFORM = process.platform === "darwin" ? "Macintosh; Intel Mac OS X 10_15_7"
   : process.platform === "win32" ? "Windows NT 10.0; Win64; x64" : "X11; Linux x86_64";
 const USER_AGENT = `Mozilla/5.0 (${PLATFORM}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36`;
-
-const BROWSER_HEADERS: Record<string, string> = {
-  "User-Agent": USER_AGENT,
-  "Accept-Language": "en-US,en;q=0.9",
-  "sec-fetch-dest": "document",
-  "sec-fetch-mode": "navigate",
-  "sec-fetch-site": "none",
-  "sec-fetch-user": "?1",
-  "Upgrade-Insecure-Requests": "1",
-};
+const BROWSER_HEADERS: Record<string, string> = { "User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9",
+  "sec-fetch-dest": "document", "sec-fetch-mode": "navigate", "sec-fetch-site": "none", "sec-fetch-user": "?1", "Upgrade-Insecure-Requests": "1" };
+const pageContract = z.object({ listings: z.array(listingContract), hasNextPage: z.boolean(), endCursor: z.string().nullable() });
+const locationsContract = z.array(z.object({ name: z.string(), latitude: z.number(), longitude: z.number() }));
 
 export class FacebookClient {
   private session: FacebookSession | null = null;
+  private initializing: Promise<FacebookSession> | null = null;
+  private auth: ReturnType<typeof loadFacebookAuth> | null = null;
   private rateLimiter: RateLimiter;
   private reqCounter = 0;
   private chromeProfile: string;
   private browserHeaders = { ...BROWSER_HEADERS };
-
-  constructor(
-    options: {
-      maxRequestsPerMinute?: number;
-      automated?: boolean;
-      chromeProfile?: string;
-    } = {}
-  ) {
+  constructor(options: { maxRequestsPerMinute?: number; automated?: boolean; chromeProfile?: string } = {}) {
     this.rateLimiter = new RateLimiter(options.maxRequestsPerMinute ?? 3, options.automated ?? false);
     this.chromeProfile = options.chromeProfile ?? "Default";
   }
-
-  async ensureSession(): Promise<FacebookSession> {
-    if (this.session) return this.session;
-    return this.initSession();
+  private async credentials() {
+    this.auth ??= loadFacebookAuth(this.chromeProfile);
+    const auth = await this.auth;
+    if (!getCookieValue(auth.cookies, "c_user")) throw new Error("No c_user cookie found. Run npm run login to save a Facebook session.");
+    this.browserHeaders = { ...BROWSER_HEADERS, "User-Agent": auth.userAgent ?? USER_AGENT };
+    return auth;
   }
-
+  async cacheScope(): Promise<string> {
+    const { cookies } = await this.credentials();
+    return crypto.createHash("sha256").update(getCookieValue(cookies, "c_user")!).digest("hex");
+  }
+  async ensureSession(): Promise<FacebookSession> {
+    await assertActivityOpen();
+    if (this.session) return this.session;
+    if (!this.initializing) this.initializing = this.initSession().finally(() => { this.initializing = null; });
+    return this.initializing;
+  }
   async initSession(): Promise<FacebookSession> {
-    const { cookies, userAgent } = await loadFacebookAuth(this.chromeProfile);
-    this.browserHeaders = { ...BROWSER_HEADERS, "User-Agent": userAgent ?? USER_AGENT };
-
-    const userId = getCookieValue(cookies, "c_user");
-    if (!userId) {
-      throw new Error(
-        "No c_user cookie found. Run npm run login to save a Facebook session."
-      );
-    }
-
+    const { cookies } = await this.credentials();
     const cookieHeader = cookiesToHeader(cookies);
-
-    // Fetch marketplace page to extract tokens
-    const tokens = await this.extractTokens(cookieHeader);
-
-    this.session = {
-      cookies,
-      cookieHeader,
-      userId,
-      ...tokens,
-    };
-
+    const tokens = await this.request(MARKETPLACE_URL, { headers: { ...this.browserHeaders, Cookie: cookieHeader, Accept: "text/html" } }, text => {
+      const dtsg = text.match(/"DTSGInitData"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/)
+        ?? text.match(/"DTSGInitialData"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/)
+        ?? text.match(/"dtsg"\s*:\s*\{"token"\s*:\s*"([^"]+)"/);
+      if (!dtsg) throw new SecurityStopError("Marketplace session token unavailable. All requests paused; inspect login/checkpoints or a page-format change manually.");
+      return { fbDtsg: dtsg[1], lsd: (text.match(/"LSD"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/)
+        ?? text.match(/name="lsd"\s+value="([^"]+)"/))?.[1] ?? "", jazoest: text.match(/jazoest=(\d+)/)?.[1] ?? "",
+        clientRevision: (text.match(/"client_revision"\s*:\s*(\d+)/) ?? text.match(/__spin_r:\s*(\d+)/))?.[1] ?? "1" };
+    });
+    this.session = { cookies, cookieHeader, userId: getCookieValue(cookies, "c_user")!, ...tokens };
     return this.session;
   }
-
-  private async extractTokens(cookieHeader: string): Promise<{
-    fbDtsg: string;
-    lsd: string;
-    jazoest: string;
-    clientRevision: string;
-  }> {
+  private async request<T>(url: string, init: RequestInit, parse: (text: string) => T): Promise<T> {
+    await assertActivityOpen();
     await this.rateLimiter.wait();
-
-    const res = await fetch(MARKETPLACE_URL, {
-      headers: {
-        ...this.browserHeaders,
-        Cookie: cookieHeader,
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    if (res.status >= 300 && res.status < 400) {
-      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
-      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
-    }
-    if ([401, 403, 429].includes(res.status)) {
-      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
-    }
-    if (!res.ok) {
-      throw new Error(
-        `Failed to fetch marketplace page: ${res.status} ${res.statusText}`
-      );
-    }
-
-    const html = await res.text();
-    if (/\/(checkpoint|login)(?:\/|\?|$)/i.test(res.url) || /<form[^>]+id=["']login_form|you[’']re temporarily blocked/i.test(html)) {
-      await suspendAutomation("Facebook returned a login, checkpoint or temporary-block page.");
-      throw new Error("Facebook requires manual login/checkpoint review. Background checks were paused.");
-    }
-
-    // Extract fb_dtsg from DTSGInitData or DTSGInitialData
-    const dtsgMatch =
-      html.match(/"DTSGInitData"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/) ??
-      html.match(/"DTSGInitialData"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/) ??
-      html.match(/"dtsg"\s*:\s*\{"token"\s*:\s*"([^"]+)"/);
-
-    if (!dtsgMatch) {
-      await suspendAutomation("Marketplace session token unavailable; review login/checkpoints or a page-format change.");
-      throw new Error(
-        "Failed to extract fb_dtsg. The session may be expired, Facebook may require a checkpoint, or its page format changed. Run npm run login and check Marketplace in the browser."
-      );
-    }
-    const fbDtsg = dtsgMatch[1];
-
-    // Extract jazoest
-    const jazoestMatch = html.match(/jazoest=(\d+)/);
-    const jazoest = jazoestMatch ? jazoestMatch[1] : "";
-
-    // Extract lsd
-    const lsdMatch = html.match(/"LSD"\s*,\s*\[\]\s*,\s*\{"token"\s*:\s*"([^"]+)"/) ??
-      html.match(/name="lsd"\s+value="([^"]+)"/);
-    const lsd = lsdMatch ? lsdMatch[1] : "";
-
-    // Extract client revision
-    const revMatch = html.match(/"client_revision"\s*:\s*(\d+)/) ??
-      html.match(/__spin_r:\s*(\d+)/);
-    const clientRevision = revMatch ? revMatch[1] : "1";
-
-    return { fbDtsg, lsd, jazoest, clientRevision };
-  }
-
-  private async graphqlRequest(
-    docId: string,
-    variables: Record<string, unknown>
-  ): Promise<unknown> {
-    const session = await this.ensureSession();
-    await this.rateLimiter.wait();
-
-    this.reqCounter++;
-
-    const body = new URLSearchParams({
-      fb_dtsg: session.fbDtsg,
-      lsd: session.lsd,
-      jazoest: session.jazoest,
-      doc_id: docId,
-      variables: JSON.stringify(variables),
-      __a: "1",
-      __req: this.reqCounter.toString(36),
-      __rev: session.clientRevision,
-    });
-
-    const res = await fetch(GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        ...this.browserHeaders,
-        Cookie: cookiesToHeader(session.cookies, GRAPHQL_URL),
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "*/*",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        Origin: "https://www.facebook.com",
-        Referer: "https://www.facebook.com/marketplace/",
-        "X-FB-LSD": session.lsd,
-      },
-      body: body.toString(),
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    if (res.status === 401 || res.status === 403) {
-      await suspendAutomation(`Facebook HTTP ${res.status}; manual login review required.`);
-      // Session expired: clear local credentials and require manual reauthentication.
-      this.session = null;
-      throw new Error("Facebook rejected the session. Run npm run login, then retry.");
-    }
-
-    if (res.status >= 300 && res.status < 400) {
-      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
-      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
-    }
-    if ([401, 403, 429].includes(res.status)) {
-      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
-    }
-    if (!res.ok) {
-      throw new Error(`GraphQL request failed: ${res.status} ${res.statusText}`);
-    }
-
-    let text = await res.text();
-
-    // Strip Facebook's anti-JSONP prefix
-    const jsonStart = text.indexOf("{");
-    if (jsonStart > 0) {
-      text = text.slice(jsonStart);
-    }
-
-    let data: any;
     try {
-      data = JSON.parse(text);
-    } catch {
-      await suspendAutomation("Facebook returned an unsupported response; inspect the session/page before resuming.");
-      throw new Error("Facebook returned an unsupported response. Check login with npm run auth:check; refresh query IDs with npm run capture-queries.");
-    }
-    if (data.errors?.length || data.error) {
-      await suspendAutomation("Facebook returned a GraphQL error; inspect restrictions or query changes before resuming.");
-      this.session = null;
-      throw new Error("Facebook returned a GraphQL error. Check login with npm run auth:check; if it passes, run npm run capture-queries. Facebook may have changed its API or restricted the request.");
-    }
-    return data;
-  }
-
-  async searchListings(params: SearchParams): Promise<SearchResult> {
-    const variables = buildSearchVariables(params);
-    const data = await this.graphqlRequest(queryDocId("marketplace_search", MARKETPLACE_SEARCH_DOC_ID), variables);
-    return parseSearchResponse(data);
-  }
-
-  async getListingDetail(listingId: string): Promise<MarketplaceListingDetail> {
-    // If we have a doc_id for listing detail, use GraphQL
-    if (LISTING_DETAIL_DOC_ID) {
-      const data = await this.graphqlRequest(LISTING_DETAIL_DOC_ID, {
-        targetId: listingId,
+      return await runGuardedRequest("authenticated", async () => {
+        let response: Response;
+        try { response = await fetch(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(30_000) }); }
+        catch { throw new Error("Facebook request failed or timed out. No automatic retry; inspect activity_status before deciding whether to continue."); }
+        try {
+          checkResponseStatus(response);
+          if (!response.ok) throw new Error(`Facebook request failed (HTTP ${response.status}). No automatic retry.`);
+          const text = await response.text();
+          checkResponsePage(text);
+          return parse(text);
+        } finally { await response.body?.cancel().catch(() => {}); }
       });
-      // Parse response (would need a dedicated parser)
-      return data as MarketplaceListingDetail;
+    } catch (error) {
+      if (error instanceof SecurityStopError) this.clearSession();
+      throw error;
     }
-
-    return parseListingDetailFromPage(await this.fetchListingPage(listingId), listingId);
   }
-
+  private async graphqlRequest(docId: string, variables: Record<string, unknown>): Promise<unknown> {
+    const session = await this.ensureSession();
+    const body = new URLSearchParams({ fb_dtsg: session.fbDtsg, lsd: session.lsd, jazoest: session.jazoest,
+      doc_id: docId, variables: JSON.stringify(variables), __a: "1", __req: (++this.reqCounter).toString(36), __rev: session.clientRevision });
+    return this.request(GRAPHQL_URL, { method: "POST", headers: { ...this.browserHeaders,
+      Cookie: cookiesToHeader(session.cookies, GRAPHQL_URL), "Content-Type": "application/x-www-form-urlencoded", Accept: "*/*",
+      "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin", Origin: "https://www.facebook.com",
+      Referer: MARKETPLACE_URL, "X-FB-LSD": session.lsd }, body: body.toString() }, text => {
+      if (/^\s*</.test(text)) throw new SecurityStopError("Facebook returned an unsupported response. All requests paused; inspect access manually.");
+      const jsonStart = text.indexOf("{");
+      let data: any;
+      try { data = JSON.parse(jsonStart > 0 ? text.slice(jsonStart) : text); }
+      catch { throw new SecurityStopError("Facebook returned an unsupported response. All requests paused; review access or query changes manually."); }
+      if (!data || typeof data !== "object") throw new SecurityStopError("Facebook returned an unsupported response. All requests paused; review access manually.");
+      if (data.errors?.length || data.error) throw new SecurityStopError("Facebook returned a GraphQL error. All requests paused; inspect restrictions or query changes manually.");
+      return data;
+    });
+  }
+  async searchListings(params: SearchParams, options: { cacheMaxAgeMs?: number } = {}): Promise<SearchResult> {
+    const variables = buildSearchVariables(params);
+    const docId = queryDocId("marketplace_search", MARKETPLACE_SEARCH_DOC_ID);
+    const response = await cachedResponse([await this.cacheScope(), "search", docId, variables], pageContract,
+      async () => parseSearchResponse(await this.graphqlRequest(docId, variables)), options.cacheMaxAgeMs);
+    return { ...response.value, listings: response.value.listings.map(listing => ({ ...listing, retrieval: response.retrieval })), retrieval: response.retrieval };
+  }
+  async getListingDetail(listingId: string): Promise<MarketplaceListingDetail> {
+    if (!/^\d+$/.test(listingId)) throw new Error("A numeric Marketplace listing ID is required.");
+    const response = await cachedResponse([await this.cacheScope(), "listing", listingId], detailContract, async () => {
+      const listing = LISTING_DETAIL_DOC_ID ? await this.graphqlRequest(LISTING_DETAIL_DOC_ID, { targetId: listingId }) as MarketplaceListingDetail
+        : parseListingDetailFromPage(await this.fetchListingPage(listingId), listingId);
+      if (!listing.title && !listing.price) throw new Error("Listing unavailable or page format changed; details could not be verified.");
+      return listing;
+    });
+    return { ...response.value, retrieval: response.retrieval };
+  }
   async diagnoseListingPrice(listingId: string) {
     const html = await this.fetchListingPage(listingId);
     return { listing: parseListingDetailFromPage(html, listingId), diagnostics: inspectListingPriceData(html, listingId) };
   }
-
   private async fetchListingPage(listingId: string): Promise<string> {
     if (!/^\d+$/.test(listingId)) throw new Error("A numeric Marketplace listing ID is required.");
-    const session = await this.ensureSession();
-    await this.rateLimiter.wait();
-
-    const url = `https://www.facebook.com/marketplace/item/${listingId}/`;
-    const res = await fetch(url, {
-      headers: {
-        ...this.browserHeaders,
-        Cookie: cookiesToHeader(session.cookies, url),
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
+    // A listing HTML GET needs cookies, not a separate GraphQL token bootstrap.
+    const { cookies } = await this.credentials();
+    const url = `${MARKETPLACE_URL}item/${listingId}/`;
+    return this.request(url, { headers: { ...this.browserHeaders, Cookie: cookiesToHeader(cookies, url), Accept: "text/html" } }, text => text);
+  }
+  async searchLocation(query: string): Promise<Array<{ name: string; latitude: number; longitude: number }>> {
+    const docId = queryDocId("city_street_search", LOCATION_SEARCH_DOC_ID);
+    const response = await cachedResponse([await this.cacheScope(), "location", docId, query], locationsContract, async () => {
+      const data = await this.graphqlRequest(docId, buildLocationSearchVariables(query));
+      const results = (data as any)?.data?.city_street_search?.street_results;
+      if (!results) throw new Error("Facebook returned an unrecognized location response. Inspect query configuration manually.");
+      return (results.edges ?? []).map((edge: any) => ({ name: edge.node?.single_line_address ?? edge.node?.subtitle ?? "Unknown",
+        latitude: edge.node?.location?.latitude ?? 0, longitude: edge.node?.location?.longitude ?? 0 }));
     });
-
-    if (res.status >= 300 && res.status < 400) {
-      await suspendAutomation("Facebook redirected a request; review login/checkpoints before resuming.");
-      throw new Error("Facebook redirected the request. Background checks paused; inspect Marketplace manually.");
-    }
-    if ([401, 403, 429].includes(res.status)) {
-      await suspendAutomation(`Facebook HTTP ${res.status}; manual review required.`);
-    }
-    if (!res.ok) {
-      throw new Error(`Failed to fetch listing ${listingId}: ${res.status}`);
-    }
-
-    const html = await res.text();
-    if (/\/(checkpoint|login)(?:\/|\?|$)/i.test(res.url) || /<form[^>]+id=["']login_form|you[’']re temporarily blocked/i.test(html)) {
-      await suspendAutomation("Facebook returned a login, checkpoint or temporary-block page.");
-      throw new Error("Facebook requires manual login/checkpoint review. Background checks were paused.");
-    }
-    return html;
+    return response.value;
   }
-
-  async searchLocation(
-    query: string
-  ): Promise<Array<{ name: string; latitude: number; longitude: number }>> {
-    const variables = buildLocationSearchVariables(query);
-    const data = await this.graphqlRequest(queryDocId("city_street_search", LOCATION_SEARCH_DOC_ID), variables);
-    if (!(data as any)?.data?.city_street_search?.street_results) {
-      throw new Error("Facebook returned an unrecognized location response. Run npm run capture-queries; the response parser may also need updating.");
-    }
-
-    try {
-      const results = (data as any)?.data?.city_street_search?.street_results?.edges ?? [];
-      return results.map((edge: any) => ({
-        name: edge.node?.single_line_address ?? edge.node?.subtitle ?? "Unknown",
-        latitude: edge.node?.location?.latitude ?? 0,
-        longitude: edge.node?.location?.longitude ?? 0,
-      }));
-    } catch {
-      return [];
-    }
-  }
-
-  clearSession() {
-    this.session = null;
-    this.reqCounter = 0;
-  }
+  clearSession() { this.session = null; this.auth = null; this.reqCounter = 0; }
 }

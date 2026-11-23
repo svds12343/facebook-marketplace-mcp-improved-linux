@@ -4,6 +4,7 @@ import { reserveAutomatedRequest } from "../monitoring/control.js";
 import { dataDirectory } from "../config.js";
 import { withLock } from "../storage/state.js";
 import { writePrivateJson } from "./private-file.js";
+import { ActivityStoppedError, assertActivityOpen } from "../activity/control.js";
 
 /** Reserve a slot shared by SSH MCP processes and the Ubuntu scheduler. */
 export async function reserveRequestSlot(maxPerMinute: number, now: number | undefined = undefined, automated = false): Promise<number> {
@@ -27,10 +28,8 @@ export async function reserveRequestSlot(maxPerMinute: number, now: number | und
 export class RateLimiter {
   constructor(private maxPerMinute: number, private automated = false) {}
   async wait(): Promise<void> {
-    for (;;) {
-      const wait = await reserveRequestSlot(this.maxPerMinute, undefined, this.automated);
-      if (!wait) return;
-      await new Promise(resolve => setTimeout(resolve, Math.min(wait + 100 + Math.random() * 200, 60000)));
-    }
+    await assertActivityOpen();
+    const wait = await reserveRequestSlot(this.maxPerMinute, undefined, this.automated);
+    if (wait) throw new ActivityStoppedError(`Facebook request spacing limit: retry no earlier than ${new Date(Date.now() + wait).toISOString()}. No automatic waiting/retry.`);
   }
 }

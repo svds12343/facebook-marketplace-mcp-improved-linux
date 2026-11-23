@@ -20,6 +20,7 @@ export function createListingHandler(client: FacebookClient) {
         `# ${listing.title}`,
         "",
         `**Price:** ${listing.price}`,
+        listing.retrieval ? `**Retrieved:** ${listing.retrieval.observedAt} (${listing.retrieval.source}). Cached data does not confirm current availability.` : null,
         ...listingContext(listing, true),
         listing.condition ? `**Condition:** ${listing.condition}` : null,
         `**Location:** ${listing.location}`,

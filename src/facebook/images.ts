@@ -1,4 +1,6 @@
 import type { ImageContent } from "@modelcontextprotocol/sdk/types.js";
+import { runGuardedRequest, reserveActivityRequest, SecurityStopError, ActivityStoppedError } from "../activity/control.js";
+import { checkResponseStatus } from "./response-guard.js";
 
 export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 2;
@@ -31,18 +33,25 @@ function imageMimeType(data: Buffer): string | undefined {
 
 /** Fetch seller photos as MCP images. Never send Facebook session cookies to a CDN. */
 export async function downloadListingImage(value: string): Promise<ImageContent> {
+  imageUrl(value);
+  return runGuardedRequest("image", () => downloadImage(value));
+}
+async function downloadImage(value: string): Promise<ImageContent> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
   timeout.unref();
   try {
     let url = imageUrl(value);
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      if (redirects) await reserveActivityRequest("image");
       const response = await fetch(url.href, {
         headers: { Accept: "image/jpeg, image/png, image/webp" },
         credentials: "omit",
         redirect: "manual",
         signal: controller.signal,
       });
+      try { checkResponseStatus(response, true); }
+      catch (error) { await response.body?.cancel(); throw error; }
 
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         await response.body?.cancel();
@@ -95,7 +104,7 @@ export async function downloadListingImage(value: string): Promise<ImageContent>
     }
     throw new ListingImageError("The photo CDN returned too many redirects.");
   } catch (error) {
-    if (error instanceof ListingImageError) throw error;
+    if (error instanceof ListingImageError || error instanceof SecurityStopError || error instanceof ActivityStoppedError) throw error;
     // Fetch errors can contain signed CDN URLs. Keep those details out of results.
     throw new ListingImageError(controller.signal.aborted
       ? "Photo download timed out. Retry this photo."

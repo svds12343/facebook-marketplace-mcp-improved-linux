@@ -4,6 +4,40 @@ A Marketplace MCP server that reads Facebook and stores tracking data locally, a
 
 This fork adds Ubuntu login, JSON-session import, private session storage, query-ID refresh, structured search results and pagination, sorting, pickup/shipping filters, safer listing extraction, actual listing images, bounded multi-page monitoring, a local alert inbox, price history, keyword/age/seen filters, and evidence-based checks for reused photos and inconsistent prices. Version 1.2 adds bounded searches across AI-chosen query variants, a recent-search cache, and reusable price benchmarks from AI-selected comparable offers. The AI makes the research and deal decisions; these new tools retrieve/store data and calculate statistics. Existing MCP tool names remain unchanged. Background requests are disabled by default. [Fork review and attribution](docs/FORK_REVIEW.md).
 
+Version **1.4.0** adds shared request budgets, a persistent security pause, account-scoped search/detail caching and local activity reporting. These controls limit traffic; they do not make Facebook's unofficial API supported or guarantee avoidance of checkpoints. Meta describes both request limits and other automated-activity detection in [How We Combat Scraping](https://about.fb.com/news/2021/04/how-we-combat-scraping/). A video-selfie challenge alone does not reveal which activity caused it.
+
+## After a checkpoint
+
+Stop MCP use and scheduled checks while reviewing the account through Facebook's normal app/site. After building this version, the following commands contact **no Facebook endpoint**:
+
+```bash
+npm run activity:pause
+npm run monitors:pause
+npm run activity:status
+```
+
+`activity:pause` stops subsequent interactive, scheduled and CDN requests across processes, including after restarts. An in-flight request may finish. Cached data, local history, benchmarks and alerts remain readable. All processes must use the **same `FB_DATA_DIR`** (by default `~/.fb-marketplace`); separate directories/machines cannot share counters. Stop old MCP processes after updating so they cannot keep running the previous code.
+
+Only after completing the checkpoint and reviewing normal Facebook access yourself, explicitly resume if you decide to use the MCP again:
+
+```bash
+npm run activity:resume -- --reviewed
+```
+
+This clears the MCP's local pause, **does not verify or unlock Facebook**, does not reset budgets, and does not enable background checks. Restart the ChatGPT MCP connection after refreshing login so all clients load the new session. `monitors:resume` cannot clear a global security pause. Existing background security pauses are carried forward when a new network request is attempted. Login and query-capture browsers remain manual maintenance operations: they are not metered and do not clear the pause. The AI must not use them to work around a limit.
+
+Shared defaults are **15 authenticated requests per rolling 24 hours**, **120 seconds between authenticated requests**, and a separate **60 CDN requests per rolling 24 hours**. These are conservative experimental settings, not known safe Facebook thresholds. They count HTTP attempts, including failed requests, token bootstrap, and each CDN redirect, rather than MCP tool calls. They intentionally prevent long uninterrupted deal sweeps. Cached reads spend no network budget. Counters only cover activity since installing this version, not your earlier browsing.
+
+Spacing and budget limits return an error immediately; they do not sleep, queue a delayed search, or retry automatically. The first uncached search/location request may load the session token and then report the spacing limit: keep the MCP process running and wait until the reported time before requesting the query again. Repeated restarts discard the in-memory token and can waste another bootstrap request. Listing-page reads now use cookies directly, avoiding that extra token request.
+
+HTTP 401/403 on authenticated endpoints, HTTP 429 (including CDN), redirects, recognized login/checkpoint HTML, missing session tokens and unsupported/errored GraphQL responses persist a pause before the next request can run. A supplied `Retry-After` also prevents premature manual resume. Unknown GraphQL formats can be site changes rather than security restrictions; a pause is not a diagnosis. An expired CDN URL returning 403 or an image timeout is not classified as an account checkpoint. Never reset request history or switch directories to continue a blocked run.
+
+`activity_status` exposes current counts, remaining budgets, next request time, cache hits and errors without cookies, raw responses or signed image URLs. Limits can be changed only through the server CLI, for example `npm run activity:configure -- --daily-limit 15 --image-limit 60 --interval-seconds 120`; the MCP exposes no resume/configuration tool. Raising them is not evidence of safety.
+
+`search_listings`, `get_listing` and location lookup reuse account-scoped results for 30 minutes. `get_listing_images` reuses the listing details but retains its native image output, numbering and validation; image bytes are not cached. Search/detail results expose `retrieval.source` and `retrieval.observedAt`. Cache reads neither refresh observed price timestamps nor replace newer price observations. Cached offers may have changed or disappeared. `smart_search` retains its bounded cache controls, subject to the same global gate.
+
+Test the implementation **offline** with `npm test` and `npm run typecheck`. Tests simulate checkpoints, redirects, rejected sessions, CDN failures, competing processes, budget exhaustion and cache reuse; they do not validate live Facebook access or demonstrate a safe request threshold. A lower-exposure alternative while the account is under review is manual browsing, then supplying listing text/photos to the AI for analysis.
+
 Version 1.3 also exposes Facebook's displayed crossed-out asking price, the calculated reduction when the currencies match, and posting dates in readable listing/search summaries. These are factual fields; the AI still decides whether an offer is worth pursuing.
 
 ## Requirements
@@ -132,6 +166,7 @@ Set up a working SSH key/login for that SSH executable and accept the host key i
 | `read_alerts`, `acknowledge_alerts` | Read the local alert inbox and explicitly mark selected alerts read. |
 | `assess_listing` | Inspect price inconsistencies, photo reuse and low-resolution photos; returns evidence and limitations. |
 | `automation_status`, `pause_automation` | Inspect or immediately stop background request activity without contacting Facebook. |
+| `activity_status`, `pause_activity` | Inspect shared HTTP budgets/security pauses or stop all new MCP network activity. Local only. |
 
 ### Search options
 
@@ -186,7 +221,7 @@ npm run build
 npm run listing:check -- 1398293835801835
 ```
 
-The last command opens a fresh stdio MCP connection and calls `get_listing` once for the Godin listing. It uses the saved session, may make an authentication request, respects the existing shared rate limit, and prints only the selected listing/price/date fields. It does not start a browser, download photos or enable monitoring. A full `https://www.facebook.com/marketplace/item/.../` URL also works; quote URLs containing query parameters.
+The last command opens a fresh stdio MCP connection and calls `get_listing` once for the Godin listing. It reuses a recent cached detail or spends one authenticated request, respects shared budgets/security pauses, and prints only selected listing/price/date/retrieval fields. It does not start a browser, download photos or enable monitoring. A full `https://www.facebook.com/marketplace/item/.../` URL also works; quote URLs containing query parameters.
 
 If Facebook still returns the values shown in the supplied screenshot, expect current price CHF 150, `previousPrice.amount: 300` and `priceReduction: { amount: 150, currency: "CHF", percent: 50 }`. Posting age should approximately match the Facebook page at the time of testing. Those are expected live values, **not a completed live verification**. If `previousPrice` is `null` despite the page showing an old price, retain the small JSON output for diagnosis; do not share session files, cookies or full page dumps. On a session/checkpoint error, stop and follow the error's login instructions.
 
@@ -202,7 +237,7 @@ This uses the same authenticated, rate-limited listing-page fetch once, with no 
 
 ### Inspect listing photos
 
-`get_listing` returns numbered photo URLs. `get_listing_images` fetches the listing's current photo URLs and returns the image bytes in MCP `image` content blocks, with labels linking each image to its listing and photo number. The image bytes are not placed in text, `structuredContent`, or UI-only metadata.
+`get_listing` returns numbered photo URLs. `get_listing_images` uses cached details up to 30 minutes old, or fetches details when needed, and returns image bytes in MCP `image` content blocks, with labels linking each image to its listing and photo number. The image bytes are not placed in text, `structuredContent`, or UI-only metadata.
 
 Call it with a numeric `listing_id`. It returns the first three photos by default. To choose photos or inspect additional ones, pass up to three 1-based `photo_indices`:
 
@@ -274,4 +309,4 @@ npm test
 
 Tests use synthetic sessions and Facebook responses, plus a real MCP subprocess. They cover cookie filtering and expiry, private file writes, CLI import without X11, search/listing parsing, filters, cursor handling, image transport, photo selection, and image-download boundaries. They make no Facebook requests. The build and these tests passing do **not** verify your account, your server's X11 connection, today's Facebook endpoint behavior, or visual interpretation by your MCP client/model.
 
-Facebook's internal API is unofficial and can change or restrict requests. The existing direct-request limit is three requests per minute. The optional macOS extraction path is retained but was not hardware-tested during this Ubuntu adaptation.
+Facebook's internal API is unofficial and can change or restrict requests. Shared rolling budgets and spacing apply in addition to the older three-per-minute ceiling and background-only controls. The optional macOS extraction path is retained but was not hardware-tested during this Ubuntu adaptation.

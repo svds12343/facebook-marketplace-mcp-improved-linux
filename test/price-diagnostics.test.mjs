@@ -116,8 +116,10 @@ test('CLI and stdio MCP return CHF 300 to CHF 150 from the detail-page alias wit
   const script = fileURLToPath(new URL('../scripts/check-listing.mjs', import.meta.url));
   const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   for (const flags of [['--diagnostics'], []]) {
+    // Separate isolated accounts/stores for the two transport fixtures; do not waive live spacing rules.
+    const runDirectory = path.join(directory, flags.length ? 'diagnostic' : 'mcp');
     const run = spawnSync(process.execPath, [script, '1398293835801835', ...flags], {
-      env: { ...process.env, FB_DATA_DIR: directory, FB_COOKIES_FILE: cookies, DISPLAY: '', NODE_OPTIONS: `--import=${fixture}` },
+      env: { ...process.env, FB_DATA_DIR: runDirectory, FB_COOKIES_FILE: cookies, DISPLAY: '', NODE_OPTIONS: `--import=${fixture}` },
       encoding: 'utf8', timeout: 15000,
     });
     assert.equal(run.status, 0, run.stderr);
@@ -131,7 +133,7 @@ test('CLI and stdio MCP return CHF 300 to CHF 150 from the detail-page alias wit
     if (flags.length) {
       assert.deepEqual(report.diagnostics.matchingFragments[0].fields.find(field => field.field === 'strikethrough_price').keys,
         ['formattedAmountWithoutDecimals']);
-      assert.equal(fs.existsSync(path.join(directory, 'tracking.json')), false);
+      assert.equal(fs.existsSync(path.join(runDirectory, 'tracking.json')), false);
     }
     assert.doesNotMatch(run.stdout + run.stderr, /private-fixture-auth-token|private-cookie/);
   }
