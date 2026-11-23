@@ -1,7 +1,7 @@
 {
   "name": "facebook-marketplace-mcp",
-  "version": "1.3.2",
-  "description": "MCP server for Facebook Marketplace — direct GraphQL API access",
+  "version": "1.4.0",
+  "description": "MCP server for Facebook Marketplace \u2014 direct GraphQL API access",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -23,7 +23,11 @@
     "monitors:status": "node dist/cli/automation.js status",
     "monitors:enable": "node dist/cli/automation.js enable",
     "monitors:pause": "node dist/cli/automation.js pause",
-    "monitors:resume": "node dist/cli/automation.js resume"
+    "monitors:resume": "node dist/cli/automation.js resume",
+    "activity:status": "node dist/cli/activity.js status",
+    "activity:pause": "node dist/cli/activity.js pause",
+    "activity:resume": "node dist/cli/activity.js resume",
+    "activity:configure": "node dist/cli/activity.js configure"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

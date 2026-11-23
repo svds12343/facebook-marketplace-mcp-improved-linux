@@ -57,6 +57,7 @@ try {
   console.log(JSON.stringify({
     ...version,
     listingId: listing.id, title: listing.title,
+    retrieval: listing.retrieval ?? { source: 'live', observedAt: new Date().toISOString() },
     currentPrice: { formatted: listing.price, amount: listing.priceAmount ?? null, currency: listing.currency ?? null },
     previousPrice: listing.previousPrice ?? null,
     priceReduction: listing.priceReduction ?? null,

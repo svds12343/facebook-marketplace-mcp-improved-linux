@@ -61,11 +61,11 @@ export function createWatchHandler(client: FacebookClient) {
     const now = new Date().toISOString();
     return result(await updateState(state => {
       if (state.watches.length >= 100 && !state.watches.some(w => w.listingId === args.listing_id)) throw new Error("Maximum 100 watched listings; remove an unused watch first.");
-      observeListing(state, listing, now, listing.description, true);
+      const record = observeListing(state, listing, now, listing.description, true);
       const existing = state.watches.find(w => w.listingId === args.listing_id);
       const previous = existing?.targetPrice === args.target_price && existing.currency === args.currency ? existing.lastPrice : undefined;
       const watch = { listingId: args.listing_id, targetPrice: args.target_price, currency: args.currency, createdAt: now, lastChecked: now,
-        lastPrice: recordPriceAlerts(state, `watch:${args.listing_id}`, listing, previous, { amount: args.target_price, currency: args.currency }, now) };
+        lastPrice: recordPriceAlerts(state, `watch:${args.listing_id}`, record.listing, previous, { amount: args.target_price, currency: args.currency }, now) };
       state.watches = [...state.watches.filter(w => w.listingId !== args.listing_id), watch];
       return { watch, note: "Saved or replaced watch. Timer checks up to 5 watches per run, oldest checked first. Alerts are stored in the MCP inbox." };
     }));

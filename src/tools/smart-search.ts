@@ -12,6 +12,7 @@ import { listingMoney, observeListing } from "../analysis/prices.js";
 import { searchListingsSchema } from "./search.js";
 import { listingContract } from "./contracts.js";
 import { guarded, result } from "./common.js";
+import { recordCacheHit } from "../activity/control.js";
 
 const { cursor: _cursor, ...searchFields } = searchListingsSchema;
 export const smartSearchSchema = {
@@ -60,12 +61,15 @@ export const smartSearchOutput = {
   coverage: z.string(),
 };
 
-export function createSmartSearchHandler(client: Pick<FacebookClient, "searchListings">) {
+export function createSmartSearchHandler(client: Pick<FacebookClient, "searchListings"> & Partial<Pick<FacebookClient, "cacheScope">>) {
   return guarded(async (raw: z.input<typeof input>) => {
     const args = input.parse(raw);
     if (args.min_price !== undefined && args.max_price !== undefined && args.min_price > args.max_price) throw new Error("min_price must not exceed max_price.");
     return withLock("smart-search", async () => {
       let cache = readCache();
+      let scope: string | undefined;
+      try { scope = await client.cacheScope?.(); }
+      catch (error) { if (args.request_budget > 0) throw error; scope = "no-current-account"; }
       // Fail before searching if persistent tracking data needs repair.
       readState();
       const planned = planQueries(args.query, args.query_variants);
@@ -77,17 +81,20 @@ export function createSmartSearchHandler(client: Pick<FacebookClient, "searchLis
         const params: SearchParams = { query, latitude: args.latitude, longitude: args.longitude, radiusKm: Math.ceil(args.radius_km),
           minPrice: args.min_price, maxPrice: args.max_price, category: args.category, limit: args.limit,
           sortBy: args.sort_by ?? "suggested", deliveryMethod: args.delivery_method ?? "all" };
-        const key = keyFor(params);
+        const key = scope ? crypto.createHash("sha256").update(`${scope}:${keyFor(params)}`).digest("hex") : keyFor(params);
         const entry = cache.find(c => c.key === key && args.cache_max_age_minutes > 0
           && Date.now() >= Date.parse(c.fetchedAt) && Date.now() - Date.parse(c.fetchedAt) <= args.cache_max_age_minutes * 60000);
         if (!entry && requestsUsed >= args.request_budget) { queries.push({ query, source: "deferred" }); continue; }
         try {
-          let page: z.infer<typeof pageContract>, fetchedAt: string;
-          if (entry) { page = entry.page; fetchedAt = entry.fetchedAt; cacheHits++; }
+          let page: z.infer<typeof pageContract>, fetchedAt: string, fromCache = Boolean(entry);
+          if (entry) { page = entry.page; fetchedAt = entry.fetchedAt; cacheHits++; await recordCacheHit(); }
           else {
             requestsUsed++;
-            page = pageContract.parse(await client.searchListings(params));
-            fetchedAt = new Date().toISOString();
+            const response = await client.searchListings(params, { cacheMaxAgeMs: args.cache_max_age_minutes * 60000 });
+            page = pageContract.parse(response);
+            fetchedAt = response.retrieval?.observedAt ?? new Date().toISOString();
+            fromCache = response.retrieval?.source === "cache";
+            if (fromCache) { requestsUsed--; cacheHits++; }
           }
           const observed = await updateState(state => page.listings.map(listing => {
             const old = state.listings[listing.id];
@@ -107,7 +114,7 @@ export function createSmartSearchHandler(client: Pick<FacebookClient, "searchLis
               if (previous.observedAt <= item.observedAt) { previous.listing = item.listing; previous.observedAt = item.observedAt; }
             } else matches.set(item.listing.id, { ...item, queries: new Set([query]) });
           }
-          queries.push({ query, source: entry ? "cache" : "live", fetchedAt, hasNextPage: page.hasNextPage, endCursor: page.endCursor,
+          queries.push({ query, source: fromCache ? "cache" : "live", fetchedAt, hasNextPage: page.hasNextPage, endCursor: page.endCursor,
             paginationStatus: !page.hasNextPage ? "end" : !page.endCursor ? "stalled" : "more_results" });
         } catch (error) {
           queries.push({ query, source: "error", error: error instanceof Error ? error.message : "Search failed" });

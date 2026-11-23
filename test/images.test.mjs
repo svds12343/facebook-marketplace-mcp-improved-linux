@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { downloadListingImage, MAX_IMAGE_BYTES } from '../dist/facebook/images.js';
 import { createListingImagesHandler } from '../dist/tools/images.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1cAAAAASUVORK5CYII=', 'base64');
+let directory, oldDataDir;
+beforeEach(() => {
+  oldDataDir = process.env.FB_DATA_DIR;
+  process.env.FB_DATA_DIR = directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-image-control-'));
+});
+afterEach(() => {
+  if (oldDataDir === undefined) delete process.env.FB_DATA_DIR; else process.env.FB_DATA_DIR = oldDataDir;
+  fs.rmSync(directory, { recursive: true, force: true });
+});
 const photo = n => `https://scontent.example.fbcdn.net/photo-${n}.png?signature=private-signature`;
 const response = () => new Response(png, { headers: { 'content-type': 'image/png' } });
 const listing = (images = [photo(1), photo(2), photo(3), photo(4)]) => ({
@@ -100,12 +112,12 @@ test('download errors omit signed URLs, response bodies and other private error 
 });
 
 test('a stalled download times out without exposing its URL', async t => {
+  const originalTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, 'setTimeout', (callback, delay) => {
-    assert.equal(delay, 15_000);
+    if (delay !== 15_000) return originalTimeout(callback, delay);
     queueMicrotask(callback);
     return { unref() {} };
   });
-  t.mock.method(globalThis, 'clearTimeout', () => {});
   t.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_, reject) => {
     signal.addEventListener('abort', () => reject(new Error(`Aborted ${photo(1)}`)), { once: true });
   }));

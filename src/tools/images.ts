@@ -33,7 +33,7 @@ export function createListingImagesHandler(client: Pick<FacebookClient, "getList
 
       const content: Array<TextContent | ImageContent> = [{
         type: "text",
-        text: `Listing ${listing_id}: ${listing.title || "Untitled listing"}\n${listing.url}\n${photos.length} photo(s) available. Each photo label below identifies the image that follows it.`,
+        text: `Listing ${listing_id}: ${listing.title || "Untitled listing"}\n${listing.url}\n${listing.retrieval ? `Listing details retrieved ${listing.retrieval.observedAt} (${listing.retrieval.source}).\n` : ""}${photos.length} photo(s) available. Each photo label below identifies the image that follows it.`,
       }];
       const returned: number[] = [];
       const failures: Array<{ photo_index: number; error: string }> = [];
@@ -54,6 +54,7 @@ export function createListingImagesHandler(client: Pick<FacebookClient, "getList
         isError: returned.length === 0,
         structuredContent: {
           listing_id, title: listing.title, total_photos: photos.length,
+          ...(listing.retrieval ? { retrieval: listing.retrieval } : {}),
           returned_photo_indices: returned, failed_photos: failures,
         },
       };

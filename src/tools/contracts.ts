@@ -1,5 +1,7 @@
 import { z } from "zod";
+export const retrievalContract = z.object({ source: z.enum(["live", "cache"]), observedAt: z.string().datetime() });
 export const listingContract = z.object({
+  retrieval: retrievalContract.optional(),
   id: z.string(), title: z.string(), price: z.string(), location: z.string(), imageUrl: z.string(),
   sellerName: z.string(), postedDate: z.string(), url: z.string(), isPending: z.boolean(),
   priceAmount: z.number().optional(), currency: z.string().optional(), sellerId: z.string().optional(),

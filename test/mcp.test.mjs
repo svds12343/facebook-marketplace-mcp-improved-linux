@@ -21,8 +21,8 @@ test('MCP initializes and lists tools without DISPLAY, browser, cookies or nativ
     await client.connect(transport);
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name).sort(), [
-      'acknowledge_alerts', 'assess_listing', 'automation_status', 'check_monitors', 'delete_monitor', 'delete_price_benchmark', 'get_listing', 'get_listing_images', 'get_price_benchmark', 'get_price_history', 'list_monitors', 'list_price_benchmarks', 'list_watches',
-      'monitor_search', 'pause_automation', 'read_alerts', 'save_price_benchmark', 'search_listings', 'search_location', 'smart_search', 'unwatch_listing', 'watch_listing',
+      'acknowledge_alerts', 'activity_status', 'assess_listing', 'automation_status', 'check_monitors', 'delete_monitor', 'delete_price_benchmark', 'get_listing', 'get_listing_images', 'get_price_benchmark', 'get_price_history', 'list_monitors', 'list_price_benchmarks', 'list_watches',
+      'monitor_search', 'pause_activity', 'pause_automation', 'read_alerts', 'save_price_benchmark', 'search_listings', 'search_location', 'smart_search', 'unwatch_listing', 'watch_listing',
     ]);
     for (const tool of tools) {
       assert.ok(tool.description.length > 20);
@@ -32,6 +32,9 @@ test('MCP initializes and lists tools without DISPLAY, browser, cookies or nativ
     assert.equal(tools.find(t => t.name === 'check_monitors').annotations.readOnlyHint, false);
     const status = await client.callTool({ name: 'automation_status', arguments: {} });
     assert.equal(status.structuredContent.enabled, false);
+    const activity = await client.callTool({ name: 'activity_status', arguments: {} });
+    assert.equal(activity.structuredContent.authenticated.used, 0);
+    assert.equal(activity.structuredContent.authenticated.limit, 15);
     const result = await client.callTool({ name: 'search_listings', arguments: {
       query: 'chair', latitude: 46.5, longitude: 6.6,
     } });
@@ -115,6 +118,7 @@ test('MCP transmits real image blocks through stdio and advertises the visual in
     const detail = await client.callTool({ name: 'get_listing', arguments: { listing_id: '123' } });
     assert.equal(detail.isError, undefined);
     assert.equal(detail.structuredContent.listing.price, 'CHF 500');
+    assert.equal(detail.structuredContent.listing.retrieval.source, 'cache');
     assert.equal(detail.structuredContent.listing.previousPrice.amount, 750);
     assert.equal(detail.structuredContent.listing.priceReduction.percent, 33.33);
     assert.match(detail.content[0].text, /Previous displayed price/);

@@ -25,8 +25,11 @@ function setup(t, response, status = 200) {
   })) });
   t.mock.method(RateLimiter.prototype, 'wait', async () => {});
   const requests = [];
+  let clock = Date.now();
+  t.mock.method(Date, 'now', () => clock);
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     requests.push({ url, options });
+    clock += 121000; // Advance simulated time; never sleep or send live requests.
     if (url === 'https://www.facebook.com/marketplace/') return new Response(tokens);
     assert.equal(url, 'https://www.facebook.com/api/graphql/');
     return new Response(typeof response === 'string' ? response : JSON.stringify(response), { status });
@@ -76,11 +79,12 @@ test('HTML/checkpoint response is not dumped to the MCP user', async t => {
   });
 });
 
-test('401 clears the session and gives a login instruction', async t => {
+test('401 clears the session and blocks reauthentication until manual review', async t => {
   const { client, requests } = setup(t, {}, 401);
   await assert.rejects(client.searchListings(params), /npm run login/);
-  await client.ensureSession();
-  assert.equal(requests.filter(request => request.url.endsWith('/marketplace/')).length, 2);
+  await assert.rejects(client.ensureSession(), /paused/);
+  await assert.rejects(new FacebookClient().ensureSession(), /paused/);
+  assert.equal(requests.filter(request => request.url.endsWith('/marketplace/')).length, 1);
 });
 
 test('429 responses pause background activity and never retry automatically', async t => {

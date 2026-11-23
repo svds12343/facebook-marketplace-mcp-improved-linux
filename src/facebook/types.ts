@@ -21,6 +21,7 @@ export interface FacebookSession {
 }
 
 export interface MarketplaceListing {
+  retrieval?: { source: "live" | "cache"; observedAt: string };
   id: string;
   title: string;
   price: string;
@@ -78,6 +79,7 @@ export interface SearchParams {
 }
 
 export interface SearchResult {
+  retrieval?: { source: "live" | "cache"; observedAt: string };
   listings: MarketplaceListing[];
   hasNextPage: boolean;
   endCursor: string | null;
